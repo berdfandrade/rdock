@@ -51,7 +51,7 @@ Abra pelo clique direito na prateleira, no separador, no Launchpad ou na Lixeira
 rdock --settings
 ```
 
-Tudo é aplicado na hora: tamanho dos ícones, ampliação (liga/desliga e tamanho máximo), posição na tela (esquerda, embaixo, direita), ocultar e mostrar automaticamente, bounce ao abrir e indicadores de apps abertos. Ficam salvas em `~/.config/rdock/settings`.
+Tudo é aplicado na hora: tamanho dos ícones, ampliação (liga/desliga e tamanho máximo), posição na tela (esquerda, embaixo, direita), ocultar e mostrar automaticamente, bounce ao abrir, indicadores de apps abertos e tamanho do texto (100% a 180%). Ficam salvas em `~/.config/rdock/settings`.
 
 Os apps fixados ficam em `~/.config/rdock/pinned`, com um ID `.desktop` por linha.
 Na primeira execução, a lista é montada com o gerenciador de arquivos, o navegador, o terminal e os favoritos do Cinnamon.

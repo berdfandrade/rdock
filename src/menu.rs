@@ -16,6 +16,7 @@ pub struct Menu {
     y: f32,
     w: f32,
     h: f32,
+    item_h: f32,
     /// Ponto de onde o menu "cresce" na animação de abertura.
     origin: (f32, f32),
     pub hovered: Option<usize>,
@@ -25,10 +26,11 @@ pub struct Menu {
 impl Menu {
     pub fn new(items: Vec<(String, Action)>, text: &Text) -> Menu {
         let w = (items.iter().map(|(l, _)| text.width(l, FONT)).fold(0.0, f32::max) + 40.0).max(170.0);
-        let h = items.len() as f32 * ITEM_H + 2.0 * PAD;
+        let item_h = (ITEM_H * text.scale).round();
+        let h = items.len() as f32 * item_h + 2.0 * PAD;
         let mut anim = Spring::new(0.0, 700.0, 0.8);
         anim.target = 1.0;
-        Menu { items, x: 0.0, y: 0.0, w, h, origin: (0.0, 0.0), hovered: None, anim }
+        Menu { items, x: 0.0, y: 0.0, w, h, item_h, origin: (0.0, 0.0), hovered: None, anim }
     }
 
     pub fn size(&self) -> (f32, f32) {
@@ -50,7 +52,7 @@ impl Menu {
         if x < self.x || x > self.x + self.w || y < self.y + PAD || y > self.y + self.h - PAD {
             return None;
         }
-        let i = ((y - self.y - PAD) / ITEM_H) as usize;
+        let i = ((y - self.y - PAD) / self.item_h) as usize;
         (i < self.items.len()).then_some(i)
     }
 
@@ -64,12 +66,12 @@ impl Menu {
         draw::fill(pix, &draw::rrect(x, y, w, h, 9.0), &draw::color(38, 38, 42, 0.96 * a), tf);
         draw::stroke(pix, &draw::rrect(x + 0.5, y + 0.5, w - 1.0, h - 1.0, 8.5), &draw::color(255, 255, 255, 0.14 * a), 1.0, tf);
         for (i, (label, _)) in self.items.iter().enumerate() {
-            let iy = y + PAD + i as f32 * ITEM_H;
+            let iy = y + PAD + i as f32 * self.item_h;
             if self.hovered == Some(i) {
-                draw::fill(pix, &draw::rrect(x + PAD, iy, w - 2.0 * PAD, ITEM_H, 5.0), &draw::color(10, 110, 230, a), tf);
+                draw::fill(pix, &draw::rrect(x + PAD, iy, w - 2.0 * PAD, self.item_h, 5.0), &draw::color(10, 110, 230, a), tf);
             }
             let tp = text.get(label, FONT, 0xffffff);
-            let ty = iy + (ITEM_H - tp.height() as f32) / 2.0;
+            let ty = iy + (self.item_h - tp.height() as f32) / 2.0;
             draw::blit(pix, tp, tf.pre_translate(x + 14.0, ty), a);
         }
     }

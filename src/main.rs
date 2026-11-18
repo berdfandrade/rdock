@@ -180,6 +180,7 @@ fn main() -> R<()> {
         time: x11rb::CURRENT_TIME,
         buf: Vec::new(),
     };
+    ctx.text.scale = ctx.settings.text_scale;
     let mut dock = dock::Dock::new(&mut ctx)?;
     let mut lp = launchpad::Launchpad::new(&mut ctx)?;
     let mut sw = settings::SettingsWin::new(&mut ctx)?;
@@ -345,7 +346,10 @@ fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, s
 fn dispatch(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, sw: &mut settings::SettingsWin, act: Action) -> R<()> {
     let mut apply = |ctx: &mut Ctx, s: config::Settings, persist: bool| -> R<()> {
         ctx.settings = s;
+        ctx.text.scale = s.text_scale;
+        lp.text_scale = s.text_scale;
         dock.apply(ctx)?;
+        dock.damage();
         sw.damage();
         if persist {
             config::save_settings(&s);

@@ -43,6 +43,7 @@ pub struct Launchpad {
     menu: Option<Menu>,
     last_scroll: Instant,
     keymap: Keymap,
+    pub text_scale: f32,
     pub needs_frame: bool,
 }
 
@@ -74,6 +75,7 @@ impl Launchpad {
             menu: None,
             last_scroll: Instant::now(),
             keymap: Keymap::load(&ctx.conn)?,
+            text_scale: ctx.settings.text_scale,
             needs_frame: false,
         })
     }
@@ -192,7 +194,7 @@ impl Launchpad {
     }
 
     fn search_rect(&self) -> (f32, f32, f32, f32) {
-        (((self.w - 300.0) / 2.0).round(), 36.0, 300.0, 34.0)
+        (((self.w - 320.0) / 2.0).round(), 36.0, 320.0, (24.0 + 13.0 * self.text_scale).round())
     }
 
     // ---------------------------------------------------------------- entrada

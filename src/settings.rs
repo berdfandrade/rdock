@@ -7,22 +7,23 @@ use x11rb::protocol::xproto::*;
 use x11rb::wrapper::ConnectionExt as _;
 
 use crate::anim::Spring;
-use crate::config::{Edge, Settings, ICON_MAX, ICON_MIN, MAG_MAX, MAG_MIN};
+use crate::config::{Edge, Settings, ICON_MAX, ICON_MIN, MAG_MAX, MAG_MIN, TEXT_MAX, TEXT_MIN};
 use crate::draw;
 use crate::{x, Action, Ctx, R};
 
-const W: f32 = 600.0;
-const H: f32 = 392.0;
+const W: f32 = 640.0;
+const H: f32 = 470.0;
 const LABEL_X: f32 = 28.0;
-const CTRL_X: f32 = 250.0;
+const CTRL_X: f32 = 270.0;
 const CTRL_END: f32 = W - 28.0;
 const ACCENT: (u8, u8, u8) = (10, 132, 255);
 
 const ROW_SIZE: f32 = 46.0;
 const ROW_MAG: f32 = 114.0;
 const ROW_EDGE: f32 = 182.0;
-const DIVIDER: f32 = 222.0;
-const ROW_TOGGLES: [f32; 3] = [262.0, 308.0, 354.0];
+const ROW_TEXT: f32 = 250.0;
+const DIVIDER: f32 = 296.0;
+const ROW_TOGGLES: [f32; 3] = [338.0, 384.0, 430.0];
 const SWITCH_W: f32 = 40.0;
 const SWITCH_H: f32 = 24.0;
 const MAG_SLIDER_X: f32 = CTRL_X + SWITCH_W + 18.0;
@@ -31,6 +32,7 @@ const MAG_SLIDER_X: f32 = CTRL_X + SWITCH_W + 18.0;
 enum Slider {
     Size,
     Mag,
+    Text,
 }
 
 pub struct SettingsWin {
@@ -73,6 +75,7 @@ fn slider_span(s: Slider) -> (f32, f32, f32) {
     match s {
         Slider::Size => (CTRL_X, CTRL_END, ROW_SIZE),
         Slider::Mag => (MAG_SLIDER_X, CTRL_END, ROW_MAG),
+        Slider::Text => (CTRL_X, CTRL_END, ROW_TEXT),
     }
 }
 
@@ -143,17 +146,19 @@ impl SettingsWin {
     fn slider_value(s: Slider, x: f32) -> f32 {
         let (x0, x1, _) = slider_span(s);
         let t = ((x - x0) / (x1 - x0)).clamp(0.0, 1.0);
-        let (lo, hi) = match s {
-            Slider::Size => (ICON_MIN, ICON_MAX),
-            Slider::Mag => (MAG_MIN, MAG_MAX),
-        };
-        (lo + t * (hi - lo)).round()
+        match s {
+            Slider::Size => (ICON_MIN + t * (ICON_MAX - ICON_MIN)).round(),
+            Slider::Mag => (MAG_MIN + t * (MAG_MAX - MAG_MIN)).round(),
+            // passos de 5%
+            Slider::Text => ((TEXT_MIN + t * (TEXT_MAX - TEXT_MIN)) * 20.0).round() / 20.0,
+        }
     }
 
     fn with_slider(mut s: Settings, which: Slider, x: f32) -> Settings {
         match which {
             Slider::Size => s.icon_size = Self::slider_value(which, x),
             Slider::Mag => s.max_size = Self::slider_value(which, x),
+            Slider::Text => s.text_scale = Self::slider_value(which, x),
         }
         s
     }
@@ -164,7 +169,7 @@ impl SettingsWin {
         }
         self.needs_frame = true;
         let mut s = ctx.settings;
-        for which in [Slider::Size, Slider::Mag] {
+        for which in [Slider::Size, Slider::Mag, Slider::Text] {
             let (x0, x1, cy) = slider_span(which);
             if which == Slider::Mag && !s.magnification {
                 continue;
@@ -222,14 +227,20 @@ impl SettingsWin {
         anim
     }
 
+    /// Nesta janela o texto cresce até 140%, para os rótulos não invadirem os controles.
+    fn fit(ctx: &Ctx, size: f32) -> f32 {
+        size * (1.4 / ctx.text.scale).min(1.0)
+    }
+
     fn label(&mut self, ctx: &mut Ctx, text: &str, x: f32, cy: f32, size: f32, alpha: f32) {
+        let size = Self::fit(ctx, size);
         let tp = ctx.text.get(text, size, 0xffffff);
         let y = (cy - tp.height() as f32 / 2.0).round();
         draw::blit(&mut self.pix, tp, Transform::from_translate(x.round(), y), alpha);
     }
 
     fn label_right(&mut self, ctx: &mut Ctx, text: &str, right: f32, cy: f32, size: f32, alpha: f32) {
-        let w = ctx.text.width(text, size) + 4.0;
+        let w = ctx.text.width(text, Self::fit(ctx, size)) + 4.0;
         self.label(ctx, text, right - w, cy, size, alpha);
     }
 
@@ -294,10 +305,18 @@ impl SettingsWin {
         draw::shadow_n(&mut self.pix, px, sy + 2.0, seg_w - 4.0, sh - 4.0, 6.0, 0.6, id, 3);
         draw::fill(&mut self.pix, &draw::rrect(px, sy + 2.0, seg_w - 4.0, sh - 4.0, 6.0), &draw::color(100, 100, 106, 1.0), id);
         for (k, l) in ["Esquerda", "Embaixo", "Direita"].iter().enumerate() {
-            let w = ctx.text.width(l, 15.0);
+            let w = ctx.text.width(l, Self::fit(ctx, 15.0));
             let near = (1.0 - (self.segment.value - k as f32).abs()).max(0.0);
             self.label(ctx, l, sx + k as f32 * seg_w + (seg_w - w) / 2.0 - 2.0, ROW_EDGE, 15.0, 0.7 + 0.3 * near);
         }
+
+        // Tamanho do texto
+        self.label(ctx, "Tamanho do texto", LABEL_X, ROW_TEXT, 16.0, 0.92);
+        self.slider(Slider::Text, s.text_scale, (TEXT_MIN, TEXT_MAX), 1.0);
+        let pct = format!("{}%", (s.text_scale * 100.0).round());
+        self.label(ctx, "A", CTRL_X - 2.0, ROW_TEXT + 24.0, 11.0, 0.5);
+        self.label(ctx, &pct, (CTRL_X + CTRL_END) / 2.0 - 16.0, ROW_TEXT + 24.0, 12.0, 0.6);
+        self.label_right(ctx, "A", CTRL_END + 2.0, ROW_TEXT + 24.0, 17.0, 0.5);
 
         if let Some(r) = tiny_skia::Rect::from_xywh(LABEL_X, DIVIDER, W - 2.0 * LABEL_X, 1.0) {
             self.pix.fill_rect(r, &draw::color(255, 255, 255, 0.1), id, None);

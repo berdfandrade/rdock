@@ -215,6 +215,8 @@ pub fn copy(dst: &mut Pixmap, src: &Pixmap, x: i32, y: i32, w: i32, h: i32) {
 }
 
 pub struct Text {
+    /// Fator de tamanho do texto (preferência "Tamanho do texto"), aplicado a todo texto.
+    pub scale: f32,
     font: FontVec,
     cache: HashMap<(String, u32, u32), Pixmap>,
 }
@@ -235,7 +237,7 @@ impl Text {
         );
         for c in candidates {
             if let Some(font) = std::fs::read(&c).ok().and_then(|b| FontVec::try_from_vec(b).ok()) {
-                return Text { font, cache: HashMap::new() };
+                return Text { scale: 1.0, font, cache: HashMap::new() };
             }
         }
         panic!("rdock: nenhuma fonte encontrada");
@@ -259,7 +261,7 @@ impl Text {
     }
 
     pub fn width(&self, s: &str, size: f32) -> f32 {
-        self.layout(s, size).1
+        self.layout(s, size * self.scale).1
     }
 
     pub fn ellipsize(&self, s: &str, size: f32, max_w: f32) -> String {
@@ -279,6 +281,7 @@ impl Text {
 
     /// Pixmap do texto (2px de margem; linha de base em ascent+2). Cacheado.
     pub fn get(&mut self, s: &str, size: f32, rgb: u32) -> &Pixmap {
+        let size = size * self.scale;
         let key = (s.to_string(), (size * 10.0) as u32, rgb);
         if !self.cache.contains_key(&key) {
             if self.cache.len() > 4000 {

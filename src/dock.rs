@@ -27,8 +27,8 @@ const PAD_TOP: f32 = 7.0;
 const PAD_BOTTOM: f32 = 9.0;
 const MARGIN: f32 = 6.0;
 /// Espessura da janela: cabe o maior ícone ampliado, o bounce, a tooltip e o menu.
-const THICK_BOTTOM: i32 = 300;
-const THICK_SIDE: i32 = 440;
+const THICK_BOTTOM: i32 = 400;
+const THICK_SIDE: i32 = 540;
 const SEP_W: f32 = 17.0;
 /// Margem ao redor da prateleira no cache 9-slice (espaço para a sombra).
 const SHELF_PAD: f32 = 20.0;
@@ -37,7 +37,7 @@ const BOUNCE_MAX: f32 = 12.0;
 const REMOVE_DIST: f32 = 60.0;
 const DRAG_THRESHOLD: f32 = 6.0;
 const POOF_T: f32 = 0.45;
-const TOOLTIP_MAX_W: f32 = 260.0;
+const TOOLTIP_MAX_W: f32 = 340.0;
 const HIDE_DELAY: Duration = Duration::from_millis(600);
 const LAUNCH_GRACE: Duration = Duration::from_secs(15);
 

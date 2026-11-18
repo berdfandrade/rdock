@@ -63,16 +63,20 @@ pub struct Settings {
     pub autohide: bool,
     pub bounce: bool,
     pub indicators: bool,
+    /// Multiplica o tamanho de todo texto da interface.
+    pub text_scale: f32,
 }
 
 pub const ICON_MIN: f32 = 32.0;
 pub const ICON_MAX: f32 = 96.0;
 pub const MAG_MIN: f32 = 48.0;
 pub const MAG_MAX: f32 = 128.0;
+pub const TEXT_MIN: f32 = 1.0;
+pub const TEXT_MAX: f32 = 1.8;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { icon_size: 52.0, magnification: true, max_size: 96.0, edge: Edge::Bottom, autohide: false, bounce: true, indicators: true }
+        Settings { icon_size: 52.0, magnification: true, max_size: 96.0, edge: Edge::Bottom, autohide: false, bounce: true, indicators: true, text_scale: 1.3 }
     }
 }
 
@@ -109,6 +113,7 @@ pub fn load_settings() -> Settings {
             "autohide" => s.autohide = flag(s.autohide),
             "bounce" => s.bounce = flag(s.bounce),
             "indicators" => s.indicators = flag(s.indicators),
+            "text_scale" => s.text_scale = num(s.text_scale).clamp(TEXT_MIN, TEXT_MAX),
             _ => {}
         }
     }
@@ -122,8 +127,8 @@ pub fn save_settings(s: &Settings) {
         Edge::Right => "right",
     };
     let text = format!(
-        "icon_size={}\nmagnification={}\nmax_size={}\nposition={edge}\nautohide={}\nbounce={}\nindicators={}\n",
-        s.icon_size, s.magnification, s.max_size, s.autohide, s.bounce, s.indicators
+        "icon_size={}\nmagnification={}\nmax_size={}\nposition={edge}\nautohide={}\nbounce={}\nindicators={}\ntext_scale={:.2}\n",
+        s.icon_size, s.magnification, s.max_size, s.autohide, s.bounce, s.indicators, s.text_scale
     );
     let p = settings_path();
     if let Some(dir) = p.parent() {
