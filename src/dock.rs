@@ -83,6 +83,15 @@ struct Drag {
     off_u: f32,
     off_v: f32,
     remove: bool,
+    /// Arraste vindo do Launchpad: `Some(true)` se o item foi criado para ele.
+    external: Option<bool>,
+}
+
+/// Arraste XDND (ex.: um .desktop do gerenciador de arquivos) passando sobre a dock.
+struct Dnd {
+    source: Window,
+    accept: bool,
+    u: f32,
 }
 
 struct Poof {
@@ -136,6 +145,7 @@ pub struct Dock {
     shelf: [Pixmap; 3],
     hide: Spring,
     left_at: Option<Instant>,
+    dnd: Option<Dnd>,
     pub needs_frame: bool,
 }
 
@@ -273,12 +283,16 @@ impl Dock {
             shelf: build_shelf(s.icon_size, s.edge, ctx.theme_path().as_deref()),
             hide: Spring::new(if s.hide == HideMode::Always { 1.0 } else { 0.0 }, 260.0, 1.0),
             left_at: None,
+            dnd: None,
             needs_frame: true,
         };
         dock.create_window(ctx)?;
         let mut items = vec![dock.item(Kind::Launchpad, 1.0)];
         for id in config::load_pinned(&ctx.apps) {
-            if let Some(app) = ctx.apps.iter().position(|a| a.id == id) {
+            let found = ctx.apps.iter().position(|a| a.id == id);
+            // Atalhos fixados a partir de um .desktop avulso ficam salvos pelo caminho completo.
+            let found = found.or_else(|| id.starts_with('/').then(|| ctx.app_for_file(std::path::Path::new(&id))).flatten());
+            if let Some(app) = found {
                 items.push(dock.item(Kind::App { app, pinned: true }, 1.0));
             }
         }
@@ -332,6 +346,8 @@ impl Dock {
         hints.min_size = Some((geom.2, geom.3));
         hints.max_size = Some((geom.2, geom.3));
         hints.set_normal_hints(&*conn, win)?;
+        // Aceita arrastar-e-soltar XDND (versão 5): .desktop do gerenciador de arquivos.
+        conn.change_property32(PropMode::REPLACE, win, a.XdndAware, AtomEnum::ATOM, &[5])?;
         conn.shape_rectangles(shape::SO::SET, shape::SK::INPUT, ClipOrdering::UNSORTED, win, 0, 0, &[])?;
         conn.map_window(win)?;
         ctx.own.push(win);
@@ -840,7 +856,144 @@ impl Dock {
             off_u: cs[i] - p.u,
             off_v: self.base() + size / 2.0 - p.v,
             remove: false,
+            external: None,
         });
+    }
+
+    /// Começa a arrastar `app` vindo de fora da dock (Launchpad), com o ponteiro em (rx, ry) na tela.
+    /// A dock agarra o ponteiro até o botão ser solto; soltar longe da dock cancela.
+    pub fn begin_external_drag(&mut self, ctx: &mut Ctx, app: usize, rx: f32, ry: f32) {
+        if !ctx.apps[app].launchable() {
+            return;
+        }
+        if self.menu.is_some() {
+            self.close_menu(ctx);
+        }
+        let (u, v) = self.from_win(rx - self.origin.0 as f32, ry - self.origin.1 as f32);
+        let (uid, is_new) = match self.find_app(app) {
+            Some(i) => (self.items[i].uid, false),
+            None => {
+                let mut it = self.item(Kind::App { app, pinned: true }, 0.0);
+                it.presence.target = 0.0;
+                let uid = it.uid;
+                let at = pos_of(&self.items, Kind::Sep(0));
+                self.items.insert(at, it);
+                (uid, true)
+            }
+        };
+        self.press = None;
+        self.drag = Some(Drag { uid, u, v, off_u: 0.0, off_v: 0.0, remove: true, external: Some(is_new) });
+        self.mouse = Some((u, v));
+        let _ = ctx.conn.grab_pointer(
+            false,
+            self.win,
+            EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION,
+            GrabMode::ASYNC,
+            GrabMode::ASYNC,
+            x11rb::NONE,
+            x11rb::NONE,
+            x11rb::CURRENT_TIME,
+        );
+        self.update_drag(u, v);
+        self.needs_frame = true;
+    }
+
+    // ---------------------------------------------------------------- XDND (soltar arquivos)
+
+    fn xdnd_send(&self, ctx: &Ctx, source: Window, ty: Atom, data: [u32; 5]) {
+        let ev = ClientMessageEvent::new(32, source, ty, data);
+        let _ = ctx.conn.send_event(false, source, EventMask::NO_EVENT, ev);
+    }
+
+    /// Trata as mensagens XdndEnter/Position/Leave/Drop enviadas pela origem do arraste.
+    pub fn on_xdnd(&mut self, ctx: &mut Ctx, e: &ClientMessageEvent) {
+        let a = ctx.atoms;
+        let d = e.data.as_data32();
+        if e.type_ == a.XdndEnter {
+            let types: Vec<u32> = if d[1] & 1 != 0 {
+                x::prop32(&ctx.conn, d[0], a.XdndTypeList, AtomEnum::ATOM)
+            } else {
+                d[2..5].to_vec()
+            };
+            self.dnd = Some(Dnd { source: d[0], accept: types.contains(&a.TEXT_URI_LIST), u: 0.0 });
+        } else if e.type_ == a.XdndPosition {
+            let Some(dnd) = &self.dnd else { return };
+            let (rx, ry) = ((d[2] >> 16) as f32, (d[2] & 0xffff) as f32);
+            let (u, v) = self.from_win(rx - self.origin.0 as f32, ry - self.origin.1 as f32);
+            let (source, accept) = (dnd.source, dnd.accept);
+            if let Some(dnd) = &mut self.dnd {
+                dnd.u = u;
+            }
+            // Os ícones se ampliam sob o arquivo arrastado, como sob o mouse.
+            self.mouse = Some((u, v));
+            self.needs_frame = true;
+            let flags = if accept { 1 | 2 } else { 2 };
+            self.xdnd_send(ctx, source, a.XdndStatus, [self.win, flags, 0, 0, if accept { a.XdndActionCopy } else { 0 }]);
+        } else if e.type_ == a.XdndLeave {
+            self.dnd = None;
+            self.mouse = None;
+            self.needs_frame = true;
+        } else if e.type_ == a.XdndDrop {
+            let Some(dnd) = &self.dnd else { return };
+            if dnd.accept {
+                let _ = ctx.conn.convert_selection(self.win, a.XdndSelection, a.TEXT_URI_LIST, a._RDOCK_DND, d[2]);
+            } else {
+                self.xdnd_send(ctx, dnd.source, a.XdndFinished, [self.win, 0, 0, 0, 0]);
+                self.dnd = None;
+            }
+        }
+    }
+
+    /// Chegou a lista de URIs soltas: fixa cada .desktop na posição do soltar.
+    pub fn on_xdnd_data(&mut self, ctx: &mut Ctx, property: Atom) {
+        let Some(dnd) = self.dnd.take() else { return };
+        let a = ctx.atoms;
+        let mut ok = false;
+        if property != x11rb::NONE {
+            let data = ctx
+                .conn
+                .get_property(true, self.win, property, AtomEnum::ANY, 0, 1 << 20)
+                .ok()
+                .and_then(|c| c.reply().ok())
+                .map(|r| r.value)
+                .unwrap_or_default();
+            for uri in String::from_utf8_lossy(&data).lines() {
+                let Some(path) = crate::apps::uri_to_path(uri.trim()) else { continue };
+                if path.extension().is_some_and(|e| e == "desktop") {
+                    if let Some(app) = ctx.app_for_file(&path) {
+                        self.pin_at(ctx, app, dnd.u);
+                        ok = true;
+                    }
+                }
+            }
+        }
+        self.xdnd_send(ctx, dnd.source, a.XdndFinished, [self.win, ok as u32, if ok { a.XdndActionCopy } else { 0 }, 0, 0]);
+        self.mouse = None;
+        self.needs_frame = true;
+    }
+
+    /// Fixa `app` na posição `u` da dock (soltar um .desktop vindo de fora).
+    pub fn pin_at(&mut self, ctx: &mut Ctx, app: usize, u: f32) {
+        if !ctx.apps[app].launchable() {
+            return;
+        }
+        let existing = self.find_app(app);
+        let (cs, _, _) = self.layout(true);
+        let sep0 = pos_of(&self.items, Kind::Sep(0));
+        let target = 1 + (1..sep0).filter(|&j| Some(j) != existing && cs[j] < u).count();
+        match existing {
+            Some(i) => self.with_flip(|items| {
+                let mut it = items.remove(i);
+                it.kind = Kind::App { app, pinned: true };
+                items.insert(target.min(items.len()), it);
+            }),
+            None => {
+                let it = self.item(Kind::App { app, pinned: true }, 0.0);
+                self.items.insert(target, it);
+            }
+        }
+        self.save(ctx);
+        self.needs_frame = true;
     }
 
     fn update_drag(&mut self, u: f32, v: f32) {
@@ -883,7 +1036,17 @@ impl Dock {
         let Kind::App { app, .. } = self.items[i].kind else { return };
         let size = self.icon() * self.items[i].scale.value;
         let (cu, cv) = self.drag_center(&d, size);
-        if d.remove {
+        if d.external.is_some() {
+            let _ = ctx.conn.ungrab_pointer(x11rb::CURRENT_TIME);
+            self.mouse = None;
+        }
+        if d.remove && d.external == Some(true) {
+            // Veio do Launchpad e foi solto longe da dock: cancela sem "puf".
+            self.items[i].removing = true;
+            self.items[i].presence.snap(0.0);
+        } else if d.remove && d.external == Some(false) {
+            self.items[i].presence.target = 1.0;
+        } else if d.remove {
             if ctx.running.contains_key(&app) {
                 self.with_flip(|items| {
                     let mut it = items.remove(i);

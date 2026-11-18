@@ -62,13 +62,41 @@ pub fn home() -> PathBuf {
 }
 
 /// Lê todos os .desktop visíveis, respeitando a precedência XDG (o primeiro ID encontrado vence).
+fn current_desktops() -> Vec<String> {
+    std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().split(':').map(|s| s.to_lowercase()).collect()
+}
+
+/// Carrega um .desktop avulso (ex.: arrastado da área de trabalho). O ID é o caminho completo.
+pub fn load_file(path: &Path) -> Option<App> {
+    let mut app = parse(path, path.to_string_lossy().to_string(), &locales(), &current_desktops())?;
+    app.listed = false;
+    Some(app)
+}
+
+/// `file:///caminho%20com%20espaco` → caminho local (com decodificação de %XX).
+pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
+    let rest = uri.strip_prefix("file://")?;
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    let bytes = rest.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?, 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    Some(PathBuf::from(String::from_utf8(out).ok()?))
+}
+
 pub fn scan() -> Vec<App> {
     let locales = locales();
-    let desktops: Vec<String> = std::env::var("XDG_CURRENT_DESKTOP")
-        .unwrap_or_default()
-        .split(':')
-        .map(|s| s.to_lowercase())
-        .collect();
+    let desktops = current_desktops();
     let mut seen = HashSet::new();
     let mut apps = Vec::new();
     for dir in data_dirs() {

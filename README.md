@@ -14,6 +14,7 @@ rdock draws everything itself on the CPU with [tiny-skia](https://github.com/Raz
 - **Click to launch or focus.** Clicking an app launches it, or brings its window to the front if it's already open.
 - **Context menus.** Right-click an app for *Open/Show*, *Keep in Dock / Remove from Dock* and *Quit*. Right-click the dock itself for quick toggles and the preferences.
 - **Drag & drop.** Drag icons to reorder them while their neighbours slide out of the way. Drag an icon out of the dock to remove it with a "poof". Drag a running app into the pinned area to pin it.
+- **Add apps by dragging.** Drag an app out of the Launchpad, or drop a `.desktop` file from your file manager or desktop (XDND), onto the dock to keep it there. It lands where you drop it.
 - **Launchpad.** A full-screen grid of every installed app over a blurred copy of the desktop, with a zoom-in animation, sliding pages (mouse wheel, arrow keys or drag) and accent-insensitive search as you type.
 - **Trash.** The trash icon shows when the trash has items, and clicking it opens the trash.
 - **Three positions:** bottom, left or right of the screen.

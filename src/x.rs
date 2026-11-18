@@ -36,6 +36,18 @@ x11rb::atom_manager! {
         WM_DELETE_WINDOW,
         _RDOCK_RUNNING,
         _RDOCK_SETTINGS,
+        _RDOCK_DND,
+        XdndAware,
+        XdndEnter,
+        XdndPosition,
+        XdndStatus,
+        XdndLeave,
+        XdndDrop,
+        XdndFinished,
+        XdndSelection,
+        XdndTypeList,
+        XdndActionCopy,
+        TEXT_URI_LIST: b"text/uri-list",
     }
 }
 

@@ -21,6 +21,7 @@ const LABEL: f32 = 15.0;
 struct Press {
     hit: Option<usize>,
     x: f32,
+    y: f32,
     pos0: f32,
     dragging: bool,
 }
@@ -43,6 +44,9 @@ pub struct Launchpad {
     menu: Option<Menu>,
     last_scroll: Instant,
     keymap: Keymap,
+    /// Canto do monitor na tela (para converter coordenadas ao arrastar para a dock).
+    ox: f32,
+    oy: f32,
     pub text_scale: f32,
     pub needs_frame: bool,
 }
@@ -76,6 +80,8 @@ impl Launchpad {
             last_scroll: Instant::now(),
             keymap: Keymap::load(&ctx.conn)?,
             text_scale: ctx.settings.text_scale,
+            ox: ctx.mon.0 as f32,
+            oy: ctx.mon.1 as f32,
             needs_frame: false,
         })
     }
@@ -199,15 +205,24 @@ impl Launchpad {
 
     // ---------------------------------------------------------------- entrada
 
-    pub fn on_motion(&mut self, x: f32, y: f32) {
+    pub fn on_motion(&mut self, x: f32, y: f32) -> Option<Action> {
         if let Some(m) = &mut self.menu {
             m.hovered = m.hit(x, y);
             self.needs_frame = true;
-            return;
+            return None;
         }
         let max = (self.pages() - 1) as f32;
-        let Some(p) = &mut self.press else { return };
+        let (ox, oy) = (self.ox, self.oy);
+        let p = self.press.as_mut()?;
         let dx = x - p.x;
+        // Arrastar um ícone o leva para a dock; arrastar o fundo troca de página.
+        if !p.dragging && (dx).hypot(y - p.y) > 10.0 {
+            if let Some(i) = p.hit {
+                let app = self.list[i];
+                self.press = None;
+                return Some(Action::DragToDock(app, x + ox, y + oy));
+            }
+        }
         if !p.dragging && dx.abs() > 10.0 {
             p.dragging = true;
         }
@@ -221,6 +236,7 @@ impl Launchpad {
             self.pos.snap(v);
             self.needs_frame = true;
         }
+        None
     }
 
     pub fn on_press(&mut self, ctx: &mut Ctx, button: u8, x: f32, y: f32) {
@@ -233,7 +249,7 @@ impl Launchpad {
         }
         match button {
             1 => {
-                self.press = Some(Press { hit: self.hit(x, y), x, pos0: self.pos.value, dragging: false });
+                self.press = Some(Press { hit: self.hit(x, y), x, y, pos0: self.pos.value, dragging: false });
             }
             3 => {
                 if let Some(i) = self.hit(x, y) {

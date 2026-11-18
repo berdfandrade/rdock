@@ -38,6 +38,8 @@ pub enum Action {
     ApplySettings(config::Settings, bool),
     /// Índice em `ctx.themes`.
     SetTheme(usize),
+    /// Arrastar um app do Launchpad para a dock: app e posição do ponteiro na tela.
+    DragToDock(usize, f32, f32),
     OpenThemeFolder,
 }
 
@@ -72,12 +74,40 @@ pub struct Ctx {
     pub theme: String,
     pub themes: Vec<config::Theme>,
     pub own: Vec<Window>,
+    /// Canal para pedir o carregamento de ícones depois da inicialização.
+    icon_tx: mpsc::Sender<Msg>,
+    icons_requested: HashSet<String>,
     /// Último timestamp X recebido (usado ao ativar janelas).
     pub time: u32,
     pub buf: Vec<u8>,
 }
 
 impl Ctx {
+    /// App de um arquivo .desktop: pelo caminho, pelo ID, ou carregando o arquivo como novo app.
+    pub fn app_for_file(&mut self, path: &std::path::Path) -> Option<usize> {
+        if let Some(i) = self.apps.iter().position(|a| a.path == path) {
+            return Some(i);
+        }
+        let name = path.file_name()?.to_string_lossy().to_string();
+        if let Some(i) = self.apps.iter().position(|a| a.id == name && a.listed) {
+            return Some(i);
+        }
+        self.add_app(apps::load_file(path)?)
+    }
+
+    fn add_app(&mut self, app: apps::App) -> Option<usize> {
+        self.ensure_icon(app.icon.clone());
+        self.apps.push(app);
+        self.matcher = apps::build_matcher(&self.apps);
+        Some(self.apps.len() - 1)
+    }
+
+    pub fn ensure_icon(&mut self, name: String) {
+        if !self.icons.contains_key(&name) && self.icons_requested.insert(name.clone()) {
+            icons::spawn_loader(vec![name], self.icon_tx.clone());
+        }
+    }
+
     pub fn theme_path(&self) -> Option<std::path::PathBuf> {
         self.themes.iter().find(|t| t.name == self.theme).and_then(|t| t.path.clone())
     }
@@ -209,6 +239,7 @@ fn main() -> R<()> {
     conn.change_window_attributes(screen.root, &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE))?;
 
     let apps = apps::scan();
+    let (tx, rx) = mpsc::channel();
     let mut ctx = Ctx {
         conn: conn.clone(),
         atoms,
@@ -231,6 +262,8 @@ fn main() -> R<()> {
         theme: config::load_theme_name(),
         themes: config::list_themes(),
         own: Vec::new(),
+        icon_tx: tx.clone(),
+        icons_requested: HashSet::new(),
         time: x11rb::CURRENT_TIME,
         buf: Vec::new(),
     };
@@ -244,12 +277,12 @@ fn main() -> R<()> {
         sw.open(&mut ctx)?;
     }
 
-    let (tx, rx) = mpsc::channel();
     let mut names = vec!["@launchpad".to_string()];
     names.extend(dock.icon_names(&ctx));
     names.extend(ctx.apps.iter().map(|a| a.icon.clone()));
     let mut seen = HashSet::new();
     names.retain(|n| seen.insert(n.clone()));
+    ctx.icons_requested.extend(names.iter().cloned());
     icons::spawn_loader(names, tx.clone());
 
     let econn = conn.clone();
@@ -330,7 +363,7 @@ fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, s
             if e.event == dock.win {
                 dock.on_motion(ctx, x, y);
             } else if lp.is_window(e.event) {
-                lp.on_motion(x, y);
+                out.extend(lp.on_motion(x, y));
             } else if e.event == sw.win {
                 out.extend(sw.on_motion(ctx, x, y));
             }
@@ -406,9 +439,12 @@ fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, s
                 sw.damage();
             }
         }
+        Event::SelectionNotify(e) if e.requestor == dock.win => dock.on_xdnd_data(ctx, e.property),
         Event::ClientMessage(e) => {
             let a = ctx.atoms;
-            if e.type_ == a._RDOCK_SETTINGS {
+            if e.window == dock.win && [a.XdndEnter, a.XdndPosition, a.XdndLeave, a.XdndDrop].contains(&e.type_) {
+                dock.on_xdnd(ctx, &e);
+            } else if e.type_ == a._RDOCK_SETTINGS {
                 out.push(Action::OpenSettings);
             } else if e.window == sw.win && e.type_ == a.WM_PROTOCOLS && e.data.as_data32()[0] == a.WM_DELETE_WINDOW {
                 sw.close(ctx);
@@ -451,6 +487,10 @@ fn dispatch(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad,
             }
         }
         Action::OpenTrash => apps::open_uri("trash:///"),
+        Action::DragToDock(app, x, y) => {
+            lp.close(ctx);
+            dock.begin_external_drag(ctx, app, x, y);
+        }
         Action::SetTheme(i) => {
             if let Some(t) = ctx.themes.get(i) {
                 ctx.theme = t.name.clone();
