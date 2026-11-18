@@ -2,7 +2,7 @@
 //! tooltips, menu de contexto, arrastar para reordenar / remover (com "puf") e ocultação automática.
 //!
 //! A lógica trabalha em coordenadas abstratas (u, v): `u` corre ao longo da dock e `v` é a
-//! distância até a borda da tela. `to_win` converte para pixels conforme a borda escolhida
+//! distância até a borda da tela. `uv_to_win` converte para pixels conforme a borda escolhida
 //! (embaixo, esquerda ou direita); os ícones em si nunca giram.
 
 use std::collections::HashMap;
@@ -117,7 +117,8 @@ fn union(a: Box4, b: Box4) -> Box4 {
 
 pub struct Dock {
     pub win: Window,
-    gc: Gcontext,
+    /// Criado junto com a janela (que é recriada ao mudar de borda).
+    out: Option<x::Surface>,
     pix: Pixmap,
     /// Canto da janela na tela (para comparar com a janela ativa).
     origin: (i32, i32),
@@ -259,7 +260,7 @@ impl Dock {
         let s = ctx.settings;
         let mut dock = Dock {
             win: x11rb::NONE,
-            gc: x11rb::NONE,
+            out: None,
             origin: (0, 0),
             pix: Pixmap::new(1, 1).ok_or("pixmap")?,
             ww: 0.0,
@@ -307,6 +308,9 @@ impl Dock {
     /// Cria (ou recria, ao mudar de borda) a janela da dock com as propriedades EWMH de painel.
     fn create_window(&mut self, ctx: &mut Ctx) -> R<()> {
         let conn = ctx.conn.clone();
+        if let Some(mut out) = self.out.take() {
+            out.free(&conn);
+        }
         if self.win != x11rb::NONE {
             conn.destroy_window(self.win)?;
             ctx.own.retain(|w| *w != self.win);
@@ -324,7 +328,7 @@ impl Dock {
             | EventMask::POINTER_MOTION
             | EventMask::ENTER_WINDOW
             | EventMask::LEAVE_WINDOW;
-        let (win, gc) = x::create_window(&conn, ctx.root, ctx.visual, ctx.colormap, geom, false, events)?;
+        let (win, out) = x::create_window(&conn, ctx.root, ctx.visual, ctx.colormap, geom, false, events)?;
         let a = &ctx.atoms;
         conn.change_property32(PropMode::REPLACE, win, a._NET_WM_WINDOW_TYPE, AtomEnum::ATOM, &[a._NET_WM_WINDOW_TYPE_DOCK])?;
         conn.change_property32(
@@ -353,7 +357,7 @@ impl Dock {
         ctx.own.push(win);
 
         self.win = win;
-        self.gc = gc;
+        self.out = Some(out);
         self.origin = (geom.0, geom.1);
         self.ww = geom.2 as f32;
         self.wh = geom.3 as f32;
@@ -466,7 +470,7 @@ impl Dock {
     }
 
     /// (u, v) → pixels da janela, já deslocado pela animação de ocultar.
-    fn to_win(&self, u: f32, v: f32) -> (f32, f32) {
+    fn uv_to_win(&self, u: f32, v: f32) -> (f32, f32) {
         self.to_win_raw(u, v - self.hide_off())
     }
 
@@ -478,7 +482,7 @@ impl Dock {
         }
     }
 
-    fn from_win(&self, x: f32, y: f32) -> (f32, f32) {
+    fn win_to_uv(&self, x: f32, y: f32) -> (f32, f32) {
         let (u, v) = match self.s.edge {
             Edge::Bottom => (x, self.wh - y),
             Edge::Left => (y, x),
@@ -489,14 +493,14 @@ impl Dock {
 
     /// Retângulo (u0..u1, v0..v1) em pixels da janela: (x0, y0, x1, y1).
     fn rect_win(&self, u0: f32, u1: f32, v0: f32, v1: f32, raw: bool) -> Box4 {
-        let f = |u, v| if raw { self.to_win_raw(u, v) } else { self.to_win(u, v) };
+        let f = |u, v| if raw { self.to_win_raw(u, v) } else { self.uv_to_win(u, v) };
         let (a, b) = (f(u0, v0), f(u1, v1));
         (a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1))
     }
 
     /// Posição (canto superior esquerdo) de uma caixa w×h encostada "além" do ponto (u, v).
     fn place_box(&self, u: f32, v: f32, w: f32, h: f32) -> (f32, f32) {
-        let (ax, ay) = self.to_win(u, v);
+        let (ax, ay) = self.uv_to_win(u, v);
         match self.s.edge {
             Edge::Bottom => (ax - w / 2.0, ay - h),
             Edge::Left => (ax, ay - h / 2.0),
@@ -697,7 +701,7 @@ impl Dock {
     // ---------------------------------------------------------------- entrada
 
     pub fn on_motion(&mut self, ctx: &mut Ctx, x: f32, y: f32) {
-        let (u, v) = self.from_win(x, y);
+        let (u, v) = self.win_to_uv(x, y);
         self.mouse = Some((u, v));
         self.mouse_px = (x, y);
         self.needs_frame = true;
@@ -732,7 +736,7 @@ impl Dock {
             }
             return;
         }
-        let (u, v) = self.from_win(x, y);
+        let (u, v) = self.win_to_uv(x, y);
         let hit = self.hit(u, v);
         match (button, hit) {
             (1, Some(i)) => {
@@ -764,7 +768,7 @@ impl Dock {
         let p = self.press.take()?;
         let i = self.index_of(p.uid)?;
         self.items[i].press.target = 0.0;
-        let (u, v) = self.from_win(x, y);
+        let (u, v) = self.win_to_uv(x, y);
         if self.hit(u, v) != Some(i) {
             return None;
         }
@@ -819,7 +823,7 @@ impl Dock {
         let mut m = Menu::new(items, &ctx.text);
         let (w, h) = m.size();
         let (x, y) = self.place_box(u, v, w, h);
-        m.place(x, y, self.to_win(u, v), (self.ww, self.wh));
+        m.place(x, y, self.uv_to_win(u, v), (self.ww, self.wh));
         self.menu = Some(m);
         let _ = ctx.conn.grab_pointer(
             false,
@@ -869,7 +873,7 @@ impl Dock {
         if self.menu.is_some() {
             self.close_menu(ctx);
         }
-        let (u, v) = self.from_win(rx - self.origin.0 as f32, ry - self.origin.1 as f32);
+        let (u, v) = self.win_to_uv(rx - self.origin.0 as f32, ry - self.origin.1 as f32);
         let (uid, is_new) = match self.find_app(app) {
             Some(i) => (self.items[i].uid, false),
             None => {
@@ -919,7 +923,7 @@ impl Dock {
         } else if e.type_ == a.XdndPosition {
             let Some(dnd) = &self.dnd else { return };
             let (rx, ry) = ((d[2] >> 16) as f32, (d[2] & 0xffff) as f32);
-            let (u, v) = self.from_win(rx - self.origin.0 as f32, ry - self.origin.1 as f32);
+            let (u, v) = self.win_to_uv(rx - self.origin.0 as f32, ry - self.origin.1 as f32);
             let (source, accept) = (dnd.source, dnd.accept);
             if let Some(dnd) = &mut self.dnd {
                 dnd.u = u;
@@ -1219,12 +1223,12 @@ impl Dock {
                 icon * 0.62 * 4.0 * ph * (1.0 - ph)
             });
             let edge_v = base + it.flip_v.value + bounce;
-            let (px, py) = self.to_win(cu, edge_v + size / 2.0);
+            let (px, py) = self.uv_to_win(cu, edge_v + size / 2.0);
             let key = icon_key(&ctx.apps, it.kind, self.trash_full);
             draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, key, px, py - size / 2.0, size, p, it.press.value * 0.8);
             ext = union(ext, (px - size / 2.0, py - size / 2.0, px + size / 2.0, py + size / 2.0));
             if self.s.indicators && it.dot.value > 0.01 {
-                let (dx, dy) = self.to_win(cu, MARGIN + 4.0);
+                let (dx, dy) = self.uv_to_win(cu, MARGIN + 4.0);
                 draw::circle(&mut self.pix, dx, dy, 2.2, &draw::color(255, 255, 255, 0.9 * it.dot.value * p));
             }
             if self.tooltip.uid == Some(it.uid) {
@@ -1238,7 +1242,7 @@ impl Dock {
                 let it = &self.items[i];
                 let size = icon * it.scale.value.max(1.0);
                 let (cu, cv) = self.drag_center(d, size);
-                let (px, py) = self.to_win(cu, cv);
+                let (px, py) = self.uv_to_win(cu, cv);
                 let key = icon_key(&ctx.apps, it.kind, self.trash_full);
                 let op = if d.remove { 0.55 } else { 1.0 };
                 draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, key, px, py - size / 2.0, size, op, 0.0);
@@ -1249,7 +1253,7 @@ impl Dock {
         // "Puf" ao remover
         for pf in &self.poofs {
             let e = ease_out_cubic(pf.t / POOF_T);
-            let (px, py) = self.to_win(pf.u, pf.v);
+            let (px, py) = self.uv_to_win(pf.u, pf.v);
             let size = icon * (1.0 + 0.5 * e);
             let op = (1.0 - e * 2.4).max(0.0);
             draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, &pf.key, px, py - size / 2.0, size, op, 0.0);
@@ -1293,7 +1297,9 @@ impl Dock {
         self.last_ext = Some(ext);
         let (x0, y0) = (up.0.floor() as i32 - 1, up.1.floor() as i32 - 1);
         let (x1, y1) = (up.2.ceil() as i32 + 1, up.3.ceil() as i32 + 1);
-        x::put_region(&ctx.conn, self.win, self.gc, &self.pix, (x0, y0, x1 - x0, y1 - y0), &mut ctx.buf)?;
+        if let Some(out) = &mut self.out {
+            out.put(&ctx.conn, self.win, &self.pix, (x0, y0, x1 - x0, y1 - y0))?;
+        }
 
         // Região de entrada: só a dock recebe cliques. Oculta, só uma faixa fina na borda.
         let reach = if self.s.hide != HideMode::Never && self.hide.target == 1.0 {

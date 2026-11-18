@@ -52,11 +52,13 @@ pub fn circle(pix: &mut Pixmap, cx: f32, cy: f32, r: f32, paint: &Paint) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Sombra suave barata: camadas concêntricas de baixa opacidade.
 pub fn shadow(pix: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32, strength: f32, tf: Transform) {
     shadow_n(pix, x, y, w, h, r, strength, tf, 10);
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Sombra com `n` camadas (menos camadas = mais barata, para elementos pequenos redesenhados todo quadro).
 pub fn shadow_n(pix: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32, strength: f32, tf: Transform, n: usize) {
     let step = 16.0 / n as f32;
@@ -167,6 +169,19 @@ pub fn blit(pix: &mut Pixmap, src: &Pixmap, tf: Transform, opacity: f32) {
     }
     let paint = PixmapPaint { opacity: opacity.min(1.0), blend_mode: BlendMode::SourceOver, quality: FilterQuality::Bilinear };
     pix.draw_pixmap(0, 0, src.as_ref(), &paint, tf, None);
+}
+
+/// Copia `src` (mesmo tamanho) para `dst` multiplicando todos os canais por `opacity`
+/// (pré-multiplicado: é o mesmo que desenhar com essa opacidade sobre transparente).
+pub fn copy_faded(dst: &mut Pixmap, src: &Pixmap, opacity: f32) {
+    let a = (opacity.clamp(0.0, 1.0) * 256.0) as u16;
+    if a >= 256 {
+        dst.data_mut().copy_from_slice(src.data());
+        return;
+    }
+    for (d, s) in dst.data_mut().iter_mut().zip(src.data()) {
+        *d = ((*s as u16 * a) >> 8) as u8;
+    }
 }
 
 /// Zera o retângulo [x0,x1)×[y0,y1) direto na memória (sem pipeline de composição).

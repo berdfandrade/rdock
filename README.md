@@ -125,7 +125,7 @@ On the first run, the pinned list starts with your file manager, browser and ter
 | `apps.rs` | `.desktop` parsing, search normalisation, launching via `gio launch` |
 | `icons.rs` | XDG icon theme lookup and SVG/PNG rasterisation (background threads) |
 | `draw.rs` | Drawing primitives, scaled-icon cache, fast blits, text (ab_glyph) |
-| `x.rs` | ARGB windows, image upload, EWMH helpers, keyboard map |
+| `x.rs` | ARGB windows, shared-memory image upload, EWMH helpers, keyboard map |
 | `anim.rs` | Damped springs |
 | `config.rs` | Settings, pinned apps and themes on disk |
 
@@ -133,6 +133,7 @@ A few details:
 
 - **Clicks pass through empty areas.** The dock window is fully transparent, and an X Shape input region limits clicks to the shelf. Everywhere else, clicks reach the windows below.
 - **Partial redraws.** Each frame clears and uploads only the region that changed.
+- **Shared-memory uploads.** Frames reach the X server through MIT-SHM instead of the socket, so the full-screen Launchpad stays at 60 fps. Without SHM (for example over a remote X connection) rdock falls back to `PutImage`.
 - **Cached shelf and icons.** The shelf is pre-rendered once and assembled with direct memory copies. Icons are cached at each integer size.
 - **Reserved space.** The dock reserves screen space through `_NET_WM_STRUT_PARTIAL`, except when hiding is enabled.
 

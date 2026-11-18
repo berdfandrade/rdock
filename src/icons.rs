@@ -202,9 +202,7 @@ fn rasterize(path: &Path) -> Option<Pixmap> {
 }
 
 pub fn gradient_paint(top: Color, bottom: Color, y0: f32, y1: f32) -> Paint<'static> {
-    let mut paint = Paint::default();
-    paint.anti_alias = true;
-    paint.shader = LinearGradient::new(
+    let shader = LinearGradient::new(
         Point::from_xy(0.0, y0),
         Point::from_xy(0.0, y1),
         vec![GradientStop::new(0.0, top), GradientStop::new(1.0, bottom)],
@@ -212,7 +210,7 @@ pub fn gradient_paint(top: Color, bottom: Color, y0: f32, y1: f32) -> Paint<'sta
         Transform::identity(),
     )
     .unwrap();
-    paint
+    Paint { shader, anti_alias: true, ..Default::default() }
 }
 
 /// Ícone do Launchpad desenhado proceduralmente: squircle escuro com grade 3×3 colorida.

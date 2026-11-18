@@ -205,9 +205,7 @@ fn parse(path: &Path, id: String, locales: &[String], desktops: &[String]) -> Op
         return None;
     }
     if let Some(te) = get("TryExec") {
-        if find_in_path(&te).is_none() {
-            return None;
-        }
+        find_in_path(&te)?;
     }
     let exec = get("Exec")?;
     let name = localized("Name")?;

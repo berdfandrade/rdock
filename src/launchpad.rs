@@ -17,6 +17,8 @@ const ROWS: usize = 5;
 const PER: usize = COLS * ROWS;
 const ICON: f32 = 92.0;
 const LABEL: f32 = 15.0;
+const OPEN_SECS: f32 = 0.32;
+const CLOSE_SECS: f32 = 0.22;
 
 struct Press {
     hit: Option<usize>,
@@ -28,16 +30,20 @@ struct Press {
 
 pub struct Launchpad {
     pub win: Window,
-    gc: Gcontext,
+    out: x::Surface,
     pix: Pixmap,
     w: f32,
     h: f32,
     pub visible: bool,
     pub closing: bool,
-    t: Spring,
+    /// Progresso linear da animação de abrir (0 → 1) ou fechar (1 → 0).
+    t: f32,
     bg: Option<Pixmap>,
     query: String,
     list: Vec<usize>,
+    /// Nomes já encurtados com "…" para cada item de `list` (vazio = recalcular).
+    labels: Vec<String>,
+    labels_scale: f32,
     page: i32,
     pos: Spring,
     press: Option<Press>,
@@ -47,7 +53,6 @@ pub struct Launchpad {
     /// Canto do monitor na tela (para converter coordenadas ao arrastar para a dock).
     ox: f32,
     oy: f32,
-    pub text_scale: f32,
     pub needs_frame: bool,
 }
 
@@ -59,35 +64,32 @@ impl Launchpad {
             | EventMask::BUTTON_RELEASE
             | EventMask::POINTER_MOTION
             | EventMask::KEY_PRESS;
-        let (win, gc) = x::create_window(&ctx.conn, ctx.root, ctx.visual, ctx.colormap, ctx.mon, true, events)?;
+        let (win, out) = x::create_window(&ctx.conn, ctx.root, ctx.visual, ctx.colormap, ctx.mon, true, events)?;
         ctx.own.push(win);
         Ok(Launchpad {
             win,
-            gc,
+            out,
             pix: Pixmap::new(mw as u32, mh as u32).ok_or("pixmap")?,
             w: mw as f32,
             h: mh as f32,
             visible: false,
             closing: false,
-            t: Spring::new(0.0, 190.0, 1.0),
+            t: 0.0,
             bg: None,
             query: String::new(),
             list: Vec::new(),
+            labels: Vec::new(),
+            labels_scale: 0.0,
             page: 0,
             pos: Spring::new(0.0, 230.0, 0.9),
             press: None,
             menu: None,
             last_scroll: Instant::now(),
             keymap: Keymap::load(&ctx.conn)?,
-            text_scale: ctx.settings.text_scale,
             ox: ctx.mon.0 as f32,
             oy: ctx.mon.1 as f32,
             needs_frame: false,
         })
-    }
-
-    pub fn is_window(&self, w: Window) -> bool {
-        w == self.win
     }
 
     pub fn open(&mut self, ctx: &mut Ctx) -> R<()> {
@@ -97,7 +99,7 @@ impl Launchpad {
             self.refilter(ctx);
             self.page = 0;
             self.pos.snap(0.0);
-            self.t.snap(0.0);
+            self.t = 0.0;
             ctx.conn.map_window(self.win)?;
             ctx.conn.configure_window(self.win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
         }
@@ -117,7 +119,6 @@ impl Launchpad {
         }
         self.visible = true;
         self.closing = false;
-        self.t.target = 1.0;
         self.needs_frame = true;
         Ok(())
     }
@@ -127,7 +128,6 @@ impl Launchpad {
             return;
         }
         self.closing = true;
-        self.t.target = 0.0;
         self.menu = None;
         let _ = ctx.conn.ungrab_keyboard(x11rb::CURRENT_TIME);
         self.needs_frame = true;
@@ -158,6 +158,7 @@ impl Launchpad {
             .collect();
         v.sort_by_key(|&(rank, i)| (rank, i));
         self.list = v.into_iter().map(|(_, i)| i).collect();
+        self.labels.clear();
         self.page = 0;
         self.pos.target = 0.0;
         self.needs_frame = true;
@@ -199,8 +200,8 @@ impl Launchpad {
         })
     }
 
-    fn search_rect(&self) -> (f32, f32, f32, f32) {
-        (((self.w - 320.0) / 2.0).round(), 36.0, 320.0, (24.0 + 13.0 * self.text_scale).round())
+    fn search_rect(&self, text_scale: f32) -> (f32, f32, f32, f32) {
+        (((self.w - 320.0) / 2.0).round(), 36.0, 320.0, (24.0 + 13.0 * text_scale).round())
     }
 
     // ---------------------------------------------------------------- entrada
@@ -263,12 +264,10 @@ impl Launchpad {
                     self.menu = Some(m);
                 }
             }
-            4..=7 => {
-                if self.last_scroll.elapsed() > Duration::from_millis(320) {
-                    self.last_scroll = Instant::now();
-                    let d = if button == 4 || button == 6 { -1 } else { 1 };
-                    self.go_page(self.page + d);
-                }
+            4..=7 if self.last_scroll.elapsed() > Duration::from_millis(320) => {
+                self.last_scroll = Instant::now();
+                let d = if button == 4 || button == 6 { -1 } else { 1 };
+                self.go_page(self.page + d);
             }
             _ => {}
         }
@@ -298,7 +297,7 @@ impl Launchpad {
         if hit.is_some() && hit == p.hit {
             return hit.map(|i| Action::Launch(self.list[i]));
         }
-        let (sx, sy, sw, sh) = self.search_rect();
+        let (sx, sy, sw, sh) = self.search_rect(ctx.text.scale);
         let in_search = x >= sx && x <= sx + sw && y >= sy && y <= sy + sh;
         if hit.is_none() && p.hit.is_none() && !in_search && y < self.h - 90.0 {
             self.close(ctx);
@@ -346,12 +345,14 @@ impl Launchpad {
     // ---------------------------------------------------------------- animação e desenho
 
     pub fn tick(&mut self, ctx: &mut Ctx, dt: f32) -> bool {
-        let mut anim = self.t.step(dt);
+        let t0 = self.t;
+        self.t = if self.closing { self.t - dt / CLOSE_SECS } else { self.t + dt / OPEN_SECS }.clamp(0.0, 1.0);
+        let mut anim = self.t != t0;
         anim |= self.pos.step(dt);
         if let Some(m) = &mut self.menu {
             anim |= m.anim.step(dt);
         }
-        if self.closing && self.t.value <= 0.01 {
+        if self.closing && self.t <= 0.0 {
             let _ = ctx.conn.unmap_window(self.win);
             self.visible = false;
             self.closing = false;
@@ -365,24 +366,15 @@ impl Launchpad {
         if !self.visible {
             return Ok(());
         }
-        let t = ease_out_cubic(self.t.value.clamp(0.0, 1.0));
+        // Abrir desacelera no fim; fechar acelera (sai rápido).
+        let t = if self.closing { 1.0 - ease_out_cubic(1.0 - self.t) } else { ease_out_cubic(self.t) };
         match &self.bg {
-            Some(bg) if t >= 0.999 => self.pix.data_mut().copy_from_slice(bg.data()),
-            Some(bg) => {
-                self.pix.fill(Color::TRANSPARENT);
-                let paint = PixmapPaint { opacity: t, ..Default::default() };
-                self.pix.draw_pixmap(0, 0, bg.as_ref(), &paint, Transform::identity(), None);
-            }
+            Some(bg) => draw::copy_faded(&mut self.pix, bg, t),
             None => self.pix.fill(Color::from_rgba8(18, 18, 22, (t * 225.0) as u8)),
         }
 
-        // Zoom de entrada: o conteúdo "assenta" de 110% para 100%.
-        let z = 1.0 + 0.1 * (1.0 - t);
-        let (cx, cy) = (self.w / 2.0, self.h / 2.0);
-        let zoom = Transform::from_translate(cx, cy).pre_scale(z, z).pre_translate(-cx, -cy);
-
         // Campo de busca
-        let (sx, sy, sw, sh) = self.search_rect();
+        let (sx, sy, sw, sh) = self.search_rect(ctx.text.scale);
         let id = Transform::identity();
         draw::fill(&mut self.pix, &draw::rrect(sx, sy, sw, sh, 8.0), &draw::color(255, 255, 255, 0.13 * t), id);
         draw::stroke(&mut self.pix, &draw::rrect(sx + 0.5, sy + 0.5, sw - 1.0, sh - 1.0, 7.5), &draw::color(255, 255, 255, 0.2 * t), 1.0, id);
@@ -395,7 +387,7 @@ impl Launchpad {
         let (label, alpha) = if self.query.is_empty() { ("Buscar", 0.5) } else { (self.query.as_str(), 1.0) };
         let tp = ctx.text.get(label, 16.0, 0xffffff);
         let ty = sy + (sh - tp.height() as f32) / 2.0;
-        draw::blit(&mut self.pix, tp, Transform::from_translate(sx + 29.0, ty), alpha * t);
+        draw::blit_fast(&mut self.pix, tp, (sx + 29.0) as i32, ty.round() as i32, alpha * t);
         if !self.query.is_empty() {
             let caret_x = sx + 31.0 + ctx.text.width(&self.query, 16.0);
             if let Some(r) = tiny_skia::Rect::from_xywh(caret_x, sy + 7.0, 1.5, sh - 14.0) {
@@ -403,35 +395,39 @@ impl Launchpad {
             }
         }
 
-        // Grade de ícones (só as páginas visíveis)
+        // Grade de ícones (só as páginas visíveis). O zoom de entrada afasta os ícones
+        // do centro (110% → 100%) sem redimensioná-los: ícones e rótulos são copiados
+        // em tamanho fixo, o que mantém cada quadro barato.
         let (cw, _, _, _) = self.grid();
+        if self.labels.len() != self.list.len() || self.labels_scale != ctx.text.scale {
+            self.labels = self.list.iter().map(|&a| ctx.text.ellipsize(&ctx.apps[a].name, LABEL, cw - 14.0)).collect();
+            self.labels_scale = ctx.text.scale;
+        }
+        let z = 1.0 + 0.1 * (1.0 - t);
+        let (mx, my) = (self.w / 2.0, self.h / 2.0);
         let pressed = self.press.as_ref().filter(|p| !p.dragging).and_then(|p| p.hit);
         for i in 0..self.list.len() {
-            let page = (i / PER) as f32;
-            if (page - self.pos.value).abs() >= 1.0 {
+            if ((i / PER) as f32 - self.pos.value).abs() >= 1.0 {
                 continue;
             }
             let (icx, top) = self.icon_pos(i, self.pos.value);
             if icx < -cw || icx > self.w + cw {
                 continue;
             }
+            let (icx, top) = (mx + (icx - mx) * z, my + (top - my) * z);
             let app = &ctx.apps[self.list[i]];
-            let (px, py) = { let p = zoom.apply_pt(icx, top); (p.0, p.1) };
-            let size = ICON * z;
             let dark = if pressed == Some(i) { 0.7 } else { 0.0 };
-            draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, &app.icon, px, py, size, t, dark);
-            let name = ctx.text.ellipsize(&app.name, LABEL, cw - 14.0);
-            let shadow = ctx.text.get(&name, LABEL, 0x000000);
-            let lw = shadow.width() as f32;
-            let label_tf = zoom.pre_translate(icx - lw / 2.0, top + ICON + 6.0);
-            draw::blit(&mut self.pix, shadow, label_tf.pre_translate(0.0, 1.0), 0.55 * t);
-            let tp = ctx.text.get(&name, LABEL, 0xffffff);
-            draw::blit(&mut self.pix, tp, label_tf, t);
+            draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, &app.icon, icx, top, ICON, t, dark);
+            let name = &self.labels[i];
+            let shadow = ctx.text.get(name, LABEL, 0x000000);
+            let (lx, ly) = ((icx - shadow.width() as f32 / 2.0).round() as i32, (top + ICON + 6.0).round() as i32);
+            draw::blit_fast(&mut self.pix, shadow, lx, ly + 1, 0.55 * t);
+            draw::blit_fast(&mut self.pix, ctx.text.get(name, LABEL, 0xffffff), lx, ly, t);
         }
         if self.list.is_empty() {
             let tp = ctx.text.get("Nenhum resultado", 20.0, 0xffffff);
-            let tf = Transform::from_translate((self.w - tp.width() as f32) / 2.0, self.h * 0.42);
-            draw::blit(&mut self.pix, tp, tf, 0.6 * t);
+            let x = ((self.w - tp.width() as f32) / 2.0) as i32;
+            draw::blit_fast(&mut self.pix, tp, x, (self.h * 0.42) as i32, 0.6 * t);
         }
 
         // Indicadores de página
@@ -449,23 +445,13 @@ impl Launchpad {
         if let Some(m) = &self.menu {
             m.draw(&mut self.pix, &mut ctx.text);
         }
-        x::put_region(&ctx.conn, self.win, self.gc, &self.pix, (0, 0, self.w as i32, self.h as i32), &mut ctx.buf)
+        self.out.put(&ctx.conn, self.win, &self.pix, (0, 0, self.w as i32, self.h as i32))
     }
 
     pub fn damage(&mut self) {
         if self.visible {
             self.needs_frame = true;
         }
-    }
-}
-
-trait ApplyPt {
-    fn apply_pt(&self, x: f32, y: f32) -> (f32, f32);
-}
-
-impl ApplyPt for Transform {
-    fn apply_pt(&self, x: f32, y: f32) -> (f32, f32) {
-        (self.sx * x + self.kx * y + self.tx, self.ky * x + self.sy * y + self.ty)
     }
 }
 

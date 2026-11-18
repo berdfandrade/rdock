@@ -40,7 +40,7 @@ enum Slider {
 
 pub struct SettingsWin {
     pub win: Window,
-    gc: Gcontext,
+    out: x::Surface,
     pix: Pixmap,
     pub visible: bool,
     /// Ampliação, ocultar, bounce, indicadores.
@@ -102,7 +102,7 @@ impl SettingsWin {
         let geom = (mx + (mw - W as i32) / 2, my + (mh - H as i32) / 2, W as i32, H as i32);
         let events = EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION;
         let conn = ctx.conn.clone();
-        let (win, gc) = x::create_window(&conn, ctx.root, ctx.visual, ctx.colormap, geom, false, events)?;
+        let (win, out) = x::create_window(&conn, ctx.root, ctx.visual, ctx.colormap, geom, false, events)?;
         let a = &ctx.atoms;
         let title = "Preferências do Dock";
         conn.change_property8(PropMode::REPLACE, win, a._NET_WM_NAME, a.UTF8_STRING, title.as_bytes())?;
@@ -120,7 +120,7 @@ impl SettingsWin {
         let sw = switch_values(&s).map(|on| Spring::new(if on { 1.0 } else { 0.0 }, 500.0, 0.75));
         Ok(SettingsWin {
             win,
-            gc,
+            out,
             pix: Pixmap::new(W as u32, H as u32).ok_or("pixmap")?,
             visible: false,
             switches: sw,
@@ -391,6 +391,6 @@ impl SettingsWin {
             self.switch(i + 1);
         }
 
-        x::put_region(&ctx.conn, self.win, self.gc, &self.pix, (0, 0, W as i32, H as i32), &mut ctx.buf)
+        self.out.put(&ctx.conn, self.win, &self.pix, (0, 0, W as i32, H as i32))
     }
 }

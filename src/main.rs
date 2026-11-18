@@ -79,7 +79,6 @@ pub struct Ctx {
     icons_requested: HashSet<String>,
     /// Último timestamp X recebido (usado ao ativar janelas).
     pub time: u32,
-    pub buf: Vec<u8>,
 }
 
 impl Ctx {
@@ -266,7 +265,6 @@ fn main() -> R<()> {
         icon_tx: tx.clone(),
         icons_requested: HashSet::new(),
         time: x11rb::CURRENT_TIME,
-        buf: Vec::new(),
     };
     ctx.text.scale = ctx.settings.text_scale;
     let mut dock = dock::Dock::new(&mut ctx)?;
@@ -363,7 +361,7 @@ fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, s
             let (x, y) = (e.event_x as f32, e.event_y as f32);
             if e.event == dock.win {
                 dock.on_motion(ctx, x, y);
-            } else if lp.is_window(e.event) {
+            } else if e.event == lp.win {
                 out.extend(lp.on_motion(x, y));
             } else if e.event == sw.win {
                 out.extend(sw.on_motion(ctx, x, y));
@@ -379,7 +377,7 @@ fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, s
             let (x, y) = (e.event_x as f32, e.event_y as f32);
             if e.event == dock.win {
                 dock.on_press(ctx, e.detail, x, y);
-            } else if lp.is_window(e.event) {
+            } else if e.event == lp.win {
                 lp.on_press(ctx, e.detail, x, y);
             } else if e.event == sw.win {
                 out.extend(sw.on_press(ctx, e.detail, x, y));
@@ -390,7 +388,7 @@ fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, s
             let (x, y) = (e.event_x as f32, e.event_y as f32);
             let act = if e.event == dock.win {
                 dock.on_release(ctx, e.detail, x, y)
-            } else if lp.is_window(e.event) {
+            } else if e.event == lp.win {
                 lp.on_release(ctx, e.detail, x, y)
             } else if e.event == sw.win {
                 sw.on_release(ctx)
@@ -434,7 +432,7 @@ fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, s
         Event::Expose(e) if e.count == 0 => {
             if e.window == dock.win {
                 dock.damage();
-            } else if lp.is_window(e.window) {
+            } else if e.window == lp.win {
                 lp.damage();
             } else if e.window == sw.win {
                 sw.damage();
@@ -460,7 +458,6 @@ fn dispatch(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad,
     let mut apply = |ctx: &mut Ctx, s: config::Settings, persist: bool| -> R<()> {
         ctx.settings = s;
         ctx.text.scale = s.text_scale;
-        lp.text_scale = s.text_scale;
         dock.apply(ctx)?;
         dock.damage();
         sw.damage();

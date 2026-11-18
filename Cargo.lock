@@ -324,6 +324,7 @@ name = "rdock"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "memmap2",
  "resvg",
  "tiny-skia",
  "x11rb",
