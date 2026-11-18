@@ -1,0 +1,325 @@
+//! rdock — uma dock no estilo do macOS para X11 (Cinnamon, XFCE, MATE, i3…), em Rust.
+
+mod anim;
+mod apps;
+mod config;
+mod dock;
+mod draw;
+mod icons;
+mod launchpad;
+mod menu;
+mod x;
+
+use std::collections::{HashMap, HashSet};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use x11rb::connection::Connection;
+use x11rb::protocol::xproto::*;
+use x11rb::protocol::Event;
+use x11rb::rust_connection::RustConnection;
+
+pub type R<T> = Result<T, Box<dyn std::error::Error>>;
+
+#[derive(Clone, Copy, Debug)]
+pub enum Action {
+    Launch(usize),
+    Quit(usize),
+    TogglePin(usize),
+    ToggleLaunchpad,
+    OpenTrash,
+}
+
+pub enum Msg {
+    X(Event),
+    Icon(String, icons::Icon),
+}
+
+/// Estado compartilhado entre a dock e o Launchpad.
+pub struct Ctx {
+    pub conn: Arc<RustConnection>,
+    pub atoms: x::Atoms,
+    pub root: Window,
+    pub visual: Visualid,
+    pub colormap: Colormap,
+    pub mon: (i32, i32, i32, i32),
+    pub apps: Vec<apps::App>,
+    matcher: HashMap<String, usize>,
+    synthetic: HashMap<String, usize>,
+    pub icons: HashMap<String, icons::Icon>,
+    pub scaled: draw::ScaleCache,
+    pub text: draw::Text,
+    win_cache: HashMap<Window, Option<usize>>,
+    /// App → janelas, em ordem de empilhamento (a última é a do topo).
+    pub running: HashMap<usize, Vec<Window>>,
+    pub pinned: HashSet<usize>,
+    pub own: Vec<Window>,
+    /// Último timestamp X recebido (usado ao ativar janelas).
+    pub time: u32,
+    pub buf: Vec<u8>,
+}
+
+impl Ctx {
+    /// Relê a lista de janelas do gerenciador de janelas e as associa a apps.
+    fn scan_clients(&mut self) {
+        let conn = self.conn.clone();
+        let a = self.atoms;
+        let mut list = x::prop32(&conn, self.root, a._NET_CLIENT_LIST_STACKING, AtomEnum::WINDOW);
+        if list.is_empty() {
+            list = x::prop32(&conn, self.root, a._NET_CLIENT_LIST, AtomEnum::WINDOW);
+        }
+        let new: Vec<Window> = list.iter().copied().filter(|w| !self.win_cache.contains_key(w)).collect();
+        let cookies: Vec<_> = new
+            .iter()
+            .map(|&w| {
+                (
+                    w,
+                    conn.get_property(false, w, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 256).ok(),
+                    conn.get_property(false, w, a._NET_WM_WINDOW_TYPE, AtomEnum::ATOM, 0, 32).ok(),
+                    conn.get_property(false, w, a._NET_WM_STATE, AtomEnum::ATOM, 0, 64).ok(),
+                )
+            })
+            .collect();
+        for (w, class, ty, state) in cookies {
+            let class = class.and_then(|c| c.reply().ok()).map(|r| r.value).unwrap_or_default();
+            let ty: Vec<u32> = ty.and_then(|c| c.reply().ok()).and_then(|r| r.value32().map(|v| v.collect())).unwrap_or_default();
+            let state: Vec<u32> = state.and_then(|c| c.reply().ok()).and_then(|r| r.value32().map(|v| v.collect())).unwrap_or_default();
+            let skip = self.own.contains(&w)
+                || ty.contains(&a._NET_WM_WINDOW_TYPE_DOCK)
+                || ty.contains(&a._NET_WM_WINDOW_TYPE_DESKTOP)
+                || state.contains(&a._NET_WM_STATE_SKIP_TASKBAR);
+            let app = if skip || class.is_empty() { None } else { Some(self.match_window(w, &class)) };
+            self.win_cache.insert(w, app);
+        }
+        let alive: HashSet<Window> = list.iter().copied().collect();
+        self.win_cache.retain(|w, _| alive.contains(w));
+        self.running.clear();
+        for w in list {
+            if let Some(Some(app)) = self.win_cache.get(&w) {
+                self.running.entry(*app).or_default().push(w);
+            }
+        }
+    }
+
+    fn match_window(&mut self, win: Window, wm_class: &[u8]) -> usize {
+        let s = String::from_utf8_lossy(wm_class);
+        let mut parts = s.split('\0');
+        let instance = parts.next().unwrap_or("").to_lowercase();
+        let class = parts.next().unwrap_or("").to_lowercase();
+        for key in [&class, &instance, &class.replace(' ', "-")] {
+            if let Some(&i) = self.matcher.get(key.as_str()) {
+                return i;
+            }
+        }
+        let key = if class.is_empty() { instance } else { class };
+        if let Some(&i) = self.synthetic.get(&key) {
+            return i;
+        }
+        let icon_key = format!("wm:{key}");
+        let pix = x::wm_icon(&self.conn, &self.atoms, win).unwrap_or_else(icons::generic_icon);
+        self.icons.insert(icon_key.clone(), icons::Icon::new(pix));
+        let original = String::from_utf8_lossy(wm_class).split('\0').nth(1).unwrap_or(&key).to_string();
+        self.apps.push(apps::App::synthetic(&original, icon_key));
+        let i = self.apps.len() - 1;
+        self.synthetic.insert(key, i);
+        i
+    }
+}
+
+fn main() -> R<()> {
+    let (conn, screen_num) = x11rb::connect(None).map_err(|e| format!("não foi possível conectar ao X11: {e}"))?;
+    let conn = Arc::new(conn);
+    let screen = conn.setup().roots[screen_num].clone();
+    let atoms = x::Atoms::new(&*conn)?.reply()?;
+
+    if conn.get_selection_owner(atoms._RDOCK_RUNNING)?.reply()?.owner != x11rb::NONE {
+        eprintln!("rdock já está em execução.");
+        return Ok(());
+    }
+    let visual = x::argb_visual(&screen).ok_or("o servidor X não tem visual ARGB de 32 bits (compositor necessário)")?;
+    let colormap = conn.generate_id()?;
+    conn.create_colormap(ColormapAlloc::NONE, colormap, screen.root, visual)?;
+    conn.change_window_attributes(screen.root, &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE))?;
+
+    let apps = apps::scan();
+    let mut ctx = Ctx {
+        conn: conn.clone(),
+        atoms,
+        root: screen.root,
+        visual,
+        colormap,
+        mon: x::primary_monitor(&conn, &screen),
+        matcher: apps::build_matcher(&apps),
+        apps,
+        synthetic: HashMap::new(),
+        icons: HashMap::new(),
+        scaled: draw::ScaleCache::default(),
+        text: draw::Text::load(),
+        win_cache: HashMap::new(),
+        running: HashMap::new(),
+        pinned: HashSet::new(),
+        own: Vec::new(),
+        time: x11rb::CURRENT_TIME,
+        buf: Vec::new(),
+    };
+    let mut dock = dock::Dock::new(&mut ctx)?;
+    let mut lp = launchpad::Launchpad::new(&mut ctx)?;
+    conn.set_selection_owner(dock.win, atoms._RDOCK_RUNNING, x11rb::CURRENT_TIME)?;
+
+    let (tx, rx) = mpsc::channel();
+    let mut names = vec!["@launchpad".to_string()];
+    names.extend(dock.icon_names(&ctx));
+    names.extend(ctx.apps.iter().map(|a| a.icon.clone()));
+    let mut seen = HashSet::new();
+    names.retain(|n| seen.insert(n.clone()));
+    icons::spawn_loader(names, tx.clone());
+
+    let econn = conn.clone();
+    std::thread::spawn(move || {
+        while let Ok(ev) = econn.wait_for_event() {
+            if tx.send(Msg::X(ev)).is_err() {
+                break;
+            }
+        }
+    });
+
+    ctx.scan_clients();
+    dock.sync_running(&ctx);
+    conn.flush()?;
+
+    const FRAME: Duration = Duration::from_micros(16_667);
+    let mut last_frame = Instant::now();
+    let mut last_trash = Instant::now();
+    loop {
+        let animating = dock.needs_frame || lp.needs_frame;
+        let timeout = if animating { FRAME.saturating_sub(last_frame.elapsed()) } else { Duration::from_secs(2) };
+        let mut msgs = Vec::new();
+        match rx.recv_timeout(timeout) {
+            Ok(m) => msgs.push(m),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        msgs.extend(rx.try_iter());
+        for m in msgs {
+            for act in handle(&mut ctx, &mut dock, &mut lp, m) {
+                dispatch(&mut ctx, &mut dock, &mut lp, act)?;
+            }
+        }
+        if last_trash.elapsed() > Duration::from_secs(2) {
+            last_trash = Instant::now();
+            dock.set_trash_full(dock::trash_is_full());
+        }
+        if (dock.needs_frame || lp.needs_frame) && last_frame.elapsed() >= FRAME.mul_f32(0.9) {
+            let dt = last_frame.elapsed().as_secs_f32().min(1.0 / 30.0);
+            last_frame = Instant::now();
+            if dock.needs_frame {
+                dock.needs_frame = dock.tick(&mut ctx, dt);
+                dock.render(&mut ctx)?;
+            }
+            if lp.needs_frame {
+                lp.needs_frame = lp.tick(&mut ctx, dt);
+                lp.render(&mut ctx)?;
+            }
+        } else if !(dock.needs_frame || lp.needs_frame) {
+            // Ocioso: o próximo quadro começa com dt de um quadro, não do tempo parado.
+            last_frame = Instant::now() - FRAME;
+        }
+        conn.flush()?;
+    }
+    Ok(())
+}
+
+fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, msg: Msg) -> Vec<Action> {
+    let ev = match msg {
+        Msg::Icon(name, icon) => {
+            ctx.icons.insert(name, icon);
+            dock.needs_frame = true;
+            lp.damage();
+            return vec![];
+        }
+        Msg::X(ev) => ev,
+    };
+    let mut out = Vec::new();
+    match ev {
+        Event::MotionNotify(e) => {
+            ctx.time = e.time;
+            let (x, y) = (e.event_x as f32, e.event_y as f32);
+            if e.event == dock.win {
+                dock.on_motion(ctx, x, y);
+            } else if lp.is_window(e.event) {
+                lp.on_motion(x, y);
+            }
+        }
+        Event::EnterNotify(e) if e.event == dock.win => {
+            ctx.time = e.time;
+            dock.on_motion(ctx, e.event_x as f32, e.event_y as f32);
+        }
+        Event::LeaveNotify(e) if e.event == dock.win && e.mode == NotifyMode::NORMAL => dock.on_leave(),
+        Event::ButtonPress(e) => {
+            ctx.time = e.time;
+            let (x, y) = (e.event_x as f32, e.event_y as f32);
+            if e.event == dock.win {
+                dock.on_press(ctx, e.detail, x, y);
+            } else if lp.is_window(e.event) {
+                lp.on_press(ctx, e.detail, x, y);
+            }
+        }
+        Event::ButtonRelease(e) => {
+            ctx.time = e.time;
+            let (x, y) = (e.event_x as f32, e.event_y as f32);
+            let act = if e.event == dock.win {
+                dock.on_release(ctx, e.detail, x, y)
+            } else if lp.is_window(e.event) {
+                lp.on_release(ctx, e.detail, x, y)
+            } else {
+                None
+            };
+            out.extend(act);
+        }
+        Event::KeyPress(e) if lp.visible => {
+            ctx.time = e.time;
+            out.extend(lp.on_key(ctx, e.detail, e.state));
+        }
+        Event::PropertyNotify(e) if e.window == ctx.root => {
+            let a = ctx.atoms;
+            if e.atom == a._NET_CLIENT_LIST || e.atom == a._NET_CLIENT_LIST_STACKING {
+                ctx.scan_clients();
+                dock.sync_running(ctx);
+            }
+        }
+        Event::Expose(e) if e.count == 0 => {
+            if e.window == dock.win {
+                dock.damage();
+            } else if lp.is_window(e.window) {
+                lp.damage();
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+fn dispatch(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, act: Action) -> R<()> {
+    match act {
+        Action::Launch(app) => {
+            dock.launch(ctx, app);
+            lp.close(ctx);
+        }
+        Action::TogglePin(app) => dock.toggle_pin(ctx, app),
+        Action::Quit(app) => {
+            for w in ctx.running.get(&app).cloned().unwrap_or_default() {
+                x::close(&ctx.conn, &ctx.atoms, ctx.root, w, ctx.time);
+            }
+        }
+        Action::ToggleLaunchpad => {
+            if lp.visible && !lp.closing {
+                lp.close(ctx);
+            } else {
+                lp.open(ctx)?;
+            }
+        }
+        Action::OpenTrash => apps::open_uri("trash:///"),
+    }
+    Ok(())
+}
