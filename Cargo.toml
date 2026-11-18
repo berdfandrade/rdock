@@ -2,7 +2,8 @@
 name = "rdock"
 version = "0.1.0"
 edition = "2021"
-description = "Dock estilo macOS para X11, escrita em Rust"
+description = "A macOS-style dock for X11 Linux desktops, written in pure Rust"
+rust-version = "1.82"
 
 [dependencies]
 x11rb = { version = "0.13", features = ["randr", "shape"] }

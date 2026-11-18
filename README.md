@@ -1,35 +1,71 @@
 # rdock
 
-Dock no estilo do macOS para X11 (Cinnamon, XFCE, MATE…), escrita em Rust puro: sem GTK nem Qt.
-Usa x11rb para o X11, tiny-skia e resvg para desenhar e ab_glyph para o texto.
+A macOS-style dock for X11 Linux desktops (Cinnamon, XFCE, MATE…), written in pure Rust with no GTK or Qt.
 
-## O que faz
+![rdock with fish-eye magnification and a tooltip](docs/hero.png)
 
-- **Magnificação olho de peixe**: os ícones crescem com curva cosseno conforme o mouse se aproxima, animados com molas.
-- **Bounce ao abrir**: o ícone quica até a janela do app aparecer.
-- **Indicador de execução**: um ponto sob cada app aberto. Apps abertos que não estão fixados aparecem depois de um separador.
-- **Tooltip** com o nome do app.
-- **Clique**: abre o app ou traz a janela dele para frente.
-- **Menu do botão direito**: Abrir/Mostrar, Manter no Dock/Remover do Dock, Encerrar.
-- **Arrastar para reordenar**, com os vizinhos abrindo espaço. Arrastar um ícone para fora da dock o remove com um "puf". Arrastar um app aberto para a área dos fixados o fixa.
-- **Launchpad** (primeiro ícone): grade em tela cheia com **todos os apps instalados** (arquivos `.desktop` do padrão XDG, incluindo Flatpak e Snap). Tem fundo desfocado, zoom de entrada, páginas (roda do mouse, setas ou arrastar) e busca por teclado que ignora acentos. Enter abre o primeiro resultado e Esc fecha.
-- **Lixeira**: o ícone muda quando há itens nela. O clique abre a lixeira.
-- Ícones vêm do tema do sistema (ex.: Papirus).
-- A dock reserva espaço na tela (`_NET_WM_STRUT`), para janelas maximizadas não ficarem por baixo dela.
-- Parada, ela usa 0% de CPU: só redesenha enquanto alguma animação está rodando.
+rdock draws everything itself on the CPU with [tiny-skia](https://github.com/RazrFalcon/tiny-skia) and talks to the X server through [x11rb](https://github.com/psychon/x11rb). It reads your installed applications from the standard XDG `.desktop` files and uses your system icon theme.
 
-## Compilar e rodar
+## Features
+
+- **Fish-eye magnification.** Icons grow along a cosine curve as the pointer approaches, animated with damped springs.
+- **Launch bounce.** An icon keeps bouncing until its application's window appears.
+- **Running indicators.** A dot appears under every open app. Open apps that aren't pinned show up after a separator, and the dock matches windows to apps by `WM_CLASS`.
+- **Click to launch or focus.** Clicking an app launches it, or brings its window to the front if it's already open.
+- **Context menus.** Right-click an app for *Open/Show*, *Keep in Dock / Remove from Dock* and *Quit*. Right-click the dock itself for quick toggles and the preferences.
+- **Drag & drop.** Drag icons to reorder them while their neighbours slide out of the way. Drag an icon out of the dock to remove it with a "poof". Drag a running app into the pinned area to pin it.
+- **Launchpad.** A full-screen grid of every installed app over a blurred copy of the desktop, with a zoom-in animation, sliding pages (mouse wheel, arrow keys or drag) and accent-insensitive search as you type.
+- **Trash.** The trash icon shows when the trash has items, and clicking it opens the trash.
+- **Three positions:** bottom, left or right of the screen.
+- **Hiding.** Never, always (when the pointer leaves), or **smart**: the dock hides only when the active window touches it, like Cinnamon's "intelligently hide" panels.
+- **Themes.** A theme is a single PNG (see [Themes](#themes)).
+- **Adjustable text size** for the whole interface, from 100% to 180%.
+- **Idle cost.** When nothing is animating the dock uses 0% CPU. An animated frame takes about 0.5–2 ms.
+
+### Launchpad
+
+![Launchpad with all installed apps over a blurred background](docs/launchpad.png)
+
+### Preferences and themes
+
+<p>
+  <img src="docs/settings.png" alt="Preferences window" width="420">
+  <img src="docs/themes.png" alt="Built-in themes: Glass, Graphite, Ice, Neon, Sunset, Wood" width="430">
+  <img src="docs/vertical.png" alt="Dock on the left edge with the Neon theme" width="55">
+</p>
+
+Every change applies immediately. Open the preferences in any of these ways:
+
+- right-click the dock shelf, a separator, the Launchpad or the Trash and choose *Preferências do Dock…*;
+- use the *Preferências do Dock* entry in your applications menu;
+- run:
+
+```bash
+rdock --settings
+```
+
+> The user interface is currently in Brazilian Portuguese.
+
+## Requirements
+
+- An X11 session with a compositor, because the dock needs a 32-bit ARGB visual for transparency. Cinnamon, XFCE with compositing, and picom all work. Wayland is not supported.
+- Rust 1.82 or newer.
+- `gio` (from GLib) to launch apps. If it's missing, rdock falls back to `sh -c`.
+
+## Build and run
 
 ```bash
 cargo build --release
 ./target/release/rdock
 ```
 
-Requisitos: X11 com compositor (Cinnamon, XFCE com compositor ativo, picom…). Wayland não é suportado.
+If you already run another dock such as Plank, stop it first. Otherwise it will sit on top of rdock at the bottom of the screen.
 
-> Se você usa **Plank** ou outra dock, encerre-a antes (`pkill plank`). Ela fica por cima da rdock na parte de baixo da tela.
+```bash
+pkill plank
+```
 
-## Iniciar com o sistema
+### Install and start on login
 
 ```bash
 cargo install --path .
@@ -40,49 +76,58 @@ Type=Application
 Name=rdock
 Exec=$HOME/.cargo/bin/rdock
 X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=2
 EOF
 ```
 
-## Preferências
+## Themes
 
-Abra pelo clique direito na prateleira, no separador, no Launchpad ou na Lixeira ("Preferências do Dock…"), pelo menu de aplicativos, ou com:
+A theme is **one plain PNG** of the dock shelf, drawn horizontally the way it looks at the bottom of the screen.
 
-```bash
-rdock --settings
-```
+- The image is scaled to the shelf's height.
+- It is split into three vertical strips. The two ends are **one third of the image height** wide each and stay fixed. The **middle strip is tiled** as the dock grows, so keep rounded corners inside the ends and make the middle tileable: flat colours, vertical gradients or horizontal stripes.
+- On the left or right edge the image is rotated automatically, so the bottom of the PNG always faces the screen edge.
+- Alpha transparency is respected.
 
-Tudo é aplicado na hora: tamanho dos ícones, ampliação (liga/desliga e tamanho máximo), posição na tela (esquerda, embaixo, direita), ocultar a dock (nunca, sempre ou de forma inteligente — só quando a janela ativa encosta nela, como nos painéis do Cinnamon), bounce ao abrir, indicadores de apps abertos e tamanho do texto (100% a 180%). Ficam salvas em `~/.config/rdock/settings`.
+For example, a 180×72 image has 24 px ends, so its corner radius should be about 22 px or less.
 
-Os apps fixados ficam em `~/.config/rdock/pinned`, com um ID `.desktop` por linha.
-Na primeira execução, a lista é montada com o gerenciador de arquivos, o navegador, o terminal e os favoritos do Cinnamon.
+Put your PNG in `~/.config/rdock/themes/`. The file name becomes the theme name. Then pick it in *Preferences → Tema*; the *Abrir pasta de temas* link opens that folder. "Vidro" (glass) is the built-in theme.
 
-## Temas
-
-Um tema é **um PNG simples** com o desenho da prateleira na horizontal (como ela fica embaixo da tela).
-
-- A imagem é escalada para a altura da prateleira.
-- É dividida em 3 faixas verticais: as duas pontas (cada uma com **1/3 da altura** da imagem) ficam fixas, e o **meio é repetido** conforme a dock cresce. Mantenha os cantos arredondados dentro das pontas e faça o meio "ladrilhável".
-- Na esquerda/direita da tela a imagem é girada automaticamente: a base do PNG fica sempre virada para a borda da tela.
-- Transparência funciona (o canal alfa do PNG é usado).
-
-Coloque o arquivo em `~/.config/rdock/themes/` (o nome do arquivo vira o nome do tema) e escolha em *Preferências → Tema*. O link "Abrir pasta de temas" abre essa pasta. Temas de exemplo (Grafite, Gelo, Neon, Pôr do sol, Madeira) ficam em [`themes/`](themes/); para instalá-los:
+To install the sample themes from [`themes/`](themes/) (Graphite, Ice, Neon, Sunset, Wood):
 
 ```bash
 mkdir -p ~/.local/share/rdock/themes && cp themes/*.png ~/.local/share/rdock/themes/
 ```
 
-O tema escolhido fica salvo em `~/.config/rdock/theme`. "Vidro" é o tema embutido.
+## Configuration files
 
-## Estrutura
-
-| Arquivo | Função |
+| File | Contents |
 |---|---|
-| `main.rs` | Loop de eventos, estado compartilhado, associação janela → app |
-| `dock.rs` | Layout, magnificação, bounce, arrastar, tooltip, menu, desenho |
-| `launchpad.rs` | Grade de apps, busca, páginas, captura e desfoque do fundo |
-| `apps.rs` | Leitura dos `.desktop`, busca e lançamento (via `gio launch`) |
-| `icons.rs` | Busca no tema de ícones (spec XDG) e rasterização SVG/PNG |
-| `draw.rs` | Primitivas, cache de ícones redimensionados, texto |
-| `settings.rs` | Janela de preferências (sliders, chaves, seletor de posição) |
-| `x.rs` | Janelas ARGB, upload de imagem, EWMH, teclado |
-| `anim.rs` | Molas amortecidas |
+| `~/.config/rdock/settings` | Size, magnification, position, hiding, bounce, indicators, text size |
+| `~/.config/rdock/pinned` | Pinned apps, one `.desktop` ID per line |
+| `~/.config/rdock/theme` | Name of the selected theme |
+| `~/.config/rdock/themes/` | Your theme PNGs |
+
+On the first run, the pinned list starts with your file manager, browser and terminal, plus your Cinnamon favourites.
+
+## How it works
+
+| File | Role |
+|---|---|
+| `main.rs` | Event loop, shared state, window → app matching, active-window tracking |
+| `dock.rs` | Layout in edge-independent (u, v) coordinates, magnification, bounce, drag & drop, hiding, rendering |
+| `launchpad.rs` | App grid, search, paging, screen capture and blur |
+| `settings.rs` | Preferences window (sliders, switches, segmented controls) |
+| `apps.rs` | `.desktop` parsing, search normalisation, launching via `gio launch` |
+| `icons.rs` | XDG icon theme lookup and SVG/PNG rasterisation (background threads) |
+| `draw.rs` | Drawing primitives, scaled-icon cache, fast blits, text (ab_glyph) |
+| `x.rs` | ARGB windows, image upload, EWMH helpers, keyboard map |
+| `anim.rs` | Damped springs |
+| `config.rs` | Settings, pinned apps and themes on disk |
+
+A few details:
+
+- **Clicks pass through empty areas.** The dock window is fully transparent, and an X Shape input region limits clicks to the shelf. Everywhere else, clicks reach the windows below.
+- **Partial redraws.** Each frame clears and uploads only the region that changed.
+- **Cached shelf and icons.** The shelf is pre-rendered once and assembled with direct memory copies. Icons are cached at each integer size.
+- **Reserved space.** The dock reserves screen space through `_NET_WM_STRUT_PARTIAL`, except when hiding is enabled.
