@@ -16,7 +16,7 @@ const COLS: usize = 7;
 const ROWS: usize = 5;
 const PER: usize = COLS * ROWS;
 const ICON: f32 = 92.0;
-const LABEL: f32 = 13.5;
+const LABEL: f32 = 15.0;
 
 struct Press {
     hit: Option<usize>,
@@ -26,7 +26,7 @@ struct Press {
 }
 
 pub struct Launchpad {
-    win: Window,
+    pub win: Window,
     gc: Gcontext,
     pix: Pixmap,
     w: f32,
@@ -192,7 +192,7 @@ impl Launchpad {
     }
 
     fn search_rect(&self) -> (f32, f32, f32, f32) {
-        (((self.w - 260.0) / 2.0).round(), 38.0, 260.0, 30.0)
+        (((self.w - 300.0) / 2.0).round(), 36.0, 300.0, 34.0)
     }
 
     // ---------------------------------------------------------------- entrada
@@ -239,7 +239,10 @@ impl Launchpad {
                     let pin = if ctx.pinned.contains(&app) { "Remover do Dock" } else { "Manter no Dock" };
                     let items = vec![("Abrir".to_string(), Action::Launch(app)), (pin.to_string(), Action::TogglePin(app))];
                     let (cx, top) = self.icon_pos(i, self.pos.value);
-                    self.menu = Some(Menu::new(items, cx, top - 6.0, &ctx.text, self.w));
+                    let mut m = Menu::new(items, &ctx.text);
+                    let (w, h) = m.size();
+                    m.place(cx - w / 2.0, top - 6.0 - h, (cx, top - 6.0), (self.w, self.h));
+                    self.menu = Some(m);
                 }
             }
             4..=7 => {
@@ -372,11 +375,11 @@ impl Launchpad {
         pb.line_to(sx + 23.5, sy + 21.5);
         draw::stroke(&mut self.pix, &pb.finish(), &draw::color(255, 255, 255, 0.7 * t), 1.8, id);
         let (label, alpha) = if self.query.is_empty() { ("Buscar", 0.5) } else { (self.query.as_str(), 1.0) };
-        let tp = ctx.text.get(label, 14.0, 0xffffff);
+        let tp = ctx.text.get(label, 16.0, 0xffffff);
         let ty = sy + (sh - tp.height() as f32) / 2.0;
         draw::blit(&mut self.pix, tp, Transform::from_translate(sx + 29.0, ty), alpha * t);
         if !self.query.is_empty() {
-            let caret_x = sx + 31.0 + ctx.text.width(&self.query, 14.0);
+            let caret_x = sx + 31.0 + ctx.text.width(&self.query, 16.0);
             if let Some(r) = tiny_skia::Rect::from_xywh(caret_x, sy + 7.0, 1.5, sh - 14.0) {
                 self.pix.fill_rect(r, &draw::color(255, 255, 255, 0.9 * t), id, None);
             }
@@ -408,7 +411,7 @@ impl Launchpad {
             draw::blit(&mut self.pix, tp, label_tf, t);
         }
         if self.list.is_empty() {
-            let tp = ctx.text.get("Nenhum resultado", 18.0, 0xffffff);
+            let tp = ctx.text.get("Nenhum resultado", 20.0, 0xffffff);
             let tf = Transform::from_translate((self.w - tp.width() as f32) / 2.0, self.h * 0.42);
             draw::blit(&mut self.pix, tp, tf, 0.6 * t);
         }

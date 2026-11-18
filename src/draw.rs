@@ -183,28 +183,26 @@ pub fn clear_rect(pix: &mut Pixmap, x0: i32, y0: i32, x1: i32, y1: i32) {
     }
 }
 
-/// Copia `src` sobre `dst` em (x, y), com `src` esticado para `w` colunas se tiver 1px de largura.
-/// Sobrescreve os pixels: só use onde o destino ainda está transparente.
-pub fn copy(dst: &mut Pixmap, src: &Pixmap, x: i32, y: i32, w: i32) {
+/// Copia `src` sobre `dst` em (x, y). Uma fonte de 1px de largura é esticada para `w` colunas;
+/// uma de 1px de altura, para `h` linhas (9-slice). Sobrescreve: use só onde o destino está transparente.
+pub fn copy(dst: &mut Pixmap, src: &Pixmap, x: i32, y: i32, w: i32, h: i32) {
     let (dw, dh) = (dst.width() as i32, dst.height() as i32);
     let (sw, sh) = (src.width() as i32, src.height() as i32);
-    let stretch = sw == 1;
-    let w = if stretch { w } else { sw };
+    let (stretch_x, stretch_y) = (sw == 1 && w != 1, sh == 1 && h != 1);
+    let w = if stretch_x { w } else { sw };
+    let h = if stretch_y { h } else { sh };
     let (x0, x1) = (x.max(0), (x + w).min(dw));
     if x1 <= x0 {
         return;
     }
     let sdata = src.data();
     let ddata = dst.data_mut();
-    for sy in 0..sh {
-        let dy = y + sy;
-        if dy < 0 || dy >= dh {
-            continue;
-        }
+    for dy in y.max(0)..(y + h).min(dh) {
+        let sy = if stretch_y { 0 } else { dy - y };
         let drow = (dy * dw) as usize * 4;
         let srow = (sy * sw) as usize * 4;
         let out = &mut ddata[drow + x0 as usize * 4..drow + x1 as usize * 4];
-        if stretch {
+        if stretch_x {
             let px = &sdata[srow..srow + 4];
             for c in out.chunks_exact_mut(4) {
                 c.copy_from_slice(px);

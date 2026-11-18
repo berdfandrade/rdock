@@ -6,48 +6,59 @@ use crate::anim::Spring;
 use crate::draw::{self, Text};
 use crate::Action;
 
-const ITEM_H: f32 = 26.0;
+const ITEM_H: f32 = 30.0;
 const PAD: f32 = 5.0;
-const FONT: f32 = 13.5;
+const FONT: f32 = 15.5;
 
 pub struct Menu {
     pub items: Vec<(String, Action)>,
-    cx: f32,
-    bottom: f32,
+    x: f32,
+    y: f32,
     w: f32,
+    h: f32,
+    /// Ponto de onde o menu "cresce" na animação de abertura.
+    origin: (f32, f32),
     pub hovered: Option<usize>,
     pub anim: Spring,
 }
 
 impl Menu {
-    /// Menu centrado em `cx`, com a borda inferior em `bottom`, limitado à largura `bound_w`.
-    pub fn new(items: Vec<(String, Action)>, cx: f32, bottom: f32, text: &Text, bound_w: f32) -> Menu {
-        let w = items.iter().map(|(l, _)| text.width(l, FONT)).fold(0.0, f32::max) + 36.0;
-        let w = w.max(150.0);
-        let cx = cx.clamp(w / 2.0 + 6.0, (bound_w - w / 2.0 - 6.0).max(w / 2.0 + 6.0));
+    pub fn new(items: Vec<(String, Action)>, text: &Text) -> Menu {
+        let w = (items.iter().map(|(l, _)| text.width(l, FONT)).fold(0.0, f32::max) + 40.0).max(170.0);
+        let h = items.len() as f32 * ITEM_H + 2.0 * PAD;
         let mut anim = Spring::new(0.0, 700.0, 0.8);
         anim.target = 1.0;
-        Menu { items, cx, bottom, w, hovered: None, anim }
+        Menu { items, x: 0.0, y: 0.0, w, h, origin: (0.0, 0.0), hovered: None, anim }
+    }
+
+    pub fn size(&self) -> (f32, f32) {
+        (self.w, self.h)
+    }
+
+    /// Posiciona o canto superior esquerdo em (x, y), mantendo o menu dentro de `bounds`.
+    pub fn place(&mut self, x: f32, y: f32, origin: (f32, f32), bounds: (f32, f32)) {
+        self.x = x.clamp(6.0, (bounds.0 - self.w - 6.0).max(6.0)).round();
+        self.y = y.clamp(6.0, (bounds.1 - self.h - 6.0).max(6.0)).round();
+        self.origin = origin;
     }
 
     pub fn rect(&self) -> (f32, f32, f32, f32) {
-        let h = self.items.len() as f32 * ITEM_H + 2.0 * PAD;
-        (self.cx - self.w / 2.0, self.bottom - h, self.w, h)
+        (self.x, self.y, self.w, self.h)
     }
 
     pub fn hit(&self, x: f32, y: f32) -> Option<usize> {
-        let (rx, ry, rw, rh) = self.rect();
-        if x < rx || x > rx + rw || y < ry + PAD || y > ry + rh - PAD {
+        if x < self.x || x > self.x + self.w || y < self.y + PAD || y > self.y + self.h - PAD {
             return None;
         }
-        let i = ((y - ry - PAD) / ITEM_H) as usize;
+        let i = ((y - self.y - PAD) / ITEM_H) as usize;
         (i < self.items.len()).then_some(i)
     }
 
     pub fn draw(&self, pix: &mut Pixmap, text: &mut Text) {
         let a = self.anim.value.clamp(0.0, 1.0);
         let s = 0.92 + 0.08 * self.anim.value;
-        let tf = Transform::from_translate(self.cx, self.bottom).pre_scale(s, s).pre_translate(-self.cx, -self.bottom);
+        let (ox, oy) = self.origin;
+        let tf = Transform::from_translate(ox, oy).pre_scale(s, s).pre_translate(-ox, -oy);
         let (x, y, w, h) = self.rect();
         draw::shadow_n(pix, x, y, w, h, 9.0, a * 1.2, tf, 5);
         draw::fill(pix, &draw::rrect(x, y, w, h, 9.0), &draw::color(38, 38, 42, 0.96 * a), tf);

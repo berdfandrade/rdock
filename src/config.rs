@@ -40,8 +40,97 @@ pub fn save_pinned(ids: &[String]) {
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let tmp = p.with_extension("tmp");
+    let tmp = p.with_extension("pinned.tmp");
     if std::fs::write(&tmp, ids.join("\n") + "\n").is_ok() {
+        let _ = std::fs::rename(&tmp, &p);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Edge {
+    Left,
+    Bottom,
+    Right,
+}
+
+/// Preferências da dock: `~/.config/rdock/settings` (chave=valor).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Settings {
+    pub icon_size: f32,
+    pub magnification: bool,
+    pub max_size: f32,
+    pub edge: Edge,
+    pub autohide: bool,
+    pub bounce: bool,
+    pub indicators: bool,
+}
+
+pub const ICON_MIN: f32 = 32.0;
+pub const ICON_MAX: f32 = 96.0;
+pub const MAG_MIN: f32 = 48.0;
+pub const MAG_MAX: f32 = 128.0;
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings { icon_size: 52.0, magnification: true, max_size: 96.0, edge: Edge::Bottom, autohide: false, bounce: true, indicators: true }
+    }
+}
+
+impl Settings {
+    /// Fator máximo de ampliação efetivo (1 = sem ampliação).
+    pub fn max_scale(&self) -> f32 {
+        if self.magnification { self.max_size.max(self.icon_size) / self.icon_size } else { 1.0 }
+    }
+}
+
+fn settings_path() -> PathBuf {
+    path().with_file_name("settings")
+}
+
+pub fn load_settings() -> Settings {
+    let mut s = Settings::default();
+    let Ok(text) = std::fs::read_to_string(settings_path()) else { return s };
+    for line in text.lines() {
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let (k, v) = (k.trim(), v.trim());
+        let num = |d: f32| v.parse::<f32>().unwrap_or(d);
+        let flag = |d: bool| v.parse::<bool>().unwrap_or(d);
+        match k {
+            "icon_size" => s.icon_size = num(s.icon_size).clamp(ICON_MIN, ICON_MAX).round(),
+            "magnification" => s.magnification = flag(s.magnification),
+            "max_size" => s.max_size = num(s.max_size).clamp(MAG_MIN, MAG_MAX).round(),
+            "position" => {
+                s.edge = match v {
+                    "left" => Edge::Left,
+                    "right" => Edge::Right,
+                    _ => Edge::Bottom,
+                }
+            }
+            "autohide" => s.autohide = flag(s.autohide),
+            "bounce" => s.bounce = flag(s.bounce),
+            "indicators" => s.indicators = flag(s.indicators),
+            _ => {}
+        }
+    }
+    s
+}
+
+pub fn save_settings(s: &Settings) {
+    let edge = match s.edge {
+        Edge::Left => "left",
+        Edge::Bottom => "bottom",
+        Edge::Right => "right",
+    };
+    let text = format!(
+        "icon_size={}\nmagnification={}\nmax_size={}\nposition={edge}\nautohide={}\nbounce={}\nindicators={}\n",
+        s.icon_size, s.magnification, s.max_size, s.autohide, s.bounce, s.indicators
+    );
+    let p = settings_path();
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = p.with_extension("settings.tmp");
+    if std::fs::write(&tmp, text).is_ok() {
         let _ = std::fs::rename(&tmp, &p);
     }
 }

@@ -29,7 +29,11 @@ x11rb::atom_manager! {
         _NET_CLOSE_WINDOW,
         _NET_WM_ICON,
         _NET_WORKAREA,
+        _NET_WM_WINDOW_TYPE_DIALOG,
+        WM_PROTOCOLS,
+        WM_DELETE_WINDOW,
         _RDOCK_RUNNING,
+        _RDOCK_SETTINGS,
     }
 }
 

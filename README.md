@@ -43,7 +43,15 @@ X-GNOME-Autostart-enabled=true
 EOF
 ```
 
-## Configuração
+## Preferências
+
+Abra pelo clique direito na prateleira, no separador, no Launchpad ou na Lixeira ("Preferências do Dock…"), pelo menu de aplicativos, ou com:
+
+```bash
+rdock --settings
+```
+
+Tudo é aplicado na hora: tamanho dos ícones, ampliação (liga/desliga e tamanho máximo), posição na tela (esquerda, embaixo, direita), ocultar e mostrar automaticamente, bounce ao abrir e indicadores de apps abertos. Ficam salvas em `~/.config/rdock/settings`.
 
 Os apps fixados ficam em `~/.config/rdock/pinned`, com um ID `.desktop` por linha.
 Na primeira execução, a lista é montada com o gerenciador de arquivos, o navegador, o terminal e os favoritos do Cinnamon.
@@ -58,5 +66,6 @@ Na primeira execução, a lista é montada com o gerenciador de arquivos, o nave
 | `apps.rs` | Leitura dos `.desktop`, busca e lançamento (via `gio launch`) |
 | `icons.rs` | Busca no tema de ícones (spec XDG) e rasterização SVG/PNG |
 | `draw.rs` | Primitivas, cache de ícones redimensionados, texto |
+| `settings.rs` | Janela de preferências (sliders, chaves, seletor de posição) |
 | `x.rs` | Janelas ARGB, upload de imagem, EWMH, teclado |
 | `anim.rs` | Molas amortecidas |

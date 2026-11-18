@@ -8,6 +8,7 @@ mod draw;
 mod icons;
 mod launchpad;
 mod menu;
+mod settings;
 mod x;
 
 use std::collections::{HashMap, HashSet};
@@ -29,6 +30,12 @@ pub enum Action {
     TogglePin(usize),
     ToggleLaunchpad,
     OpenTrash,
+    OpenSettings,
+    ToggleAutohide,
+    ToggleMagnification,
+    SetEdge(config::Edge),
+    /// Novas preferências; `true` = gravar em disco (falso durante o arraste de um slider).
+    ApplySettings(config::Settings, bool),
 }
 
 pub enum Msg {
@@ -54,6 +61,7 @@ pub struct Ctx {
     /// App → janelas, em ordem de empilhamento (a última é a do topo).
     pub running: HashMap<usize, Vec<Window>>,
     pub pinned: HashSet<usize>,
+    pub settings: config::Settings,
     pub own: Vec<Window>,
     /// Último timestamp X recebido (usado ao ativar janelas).
     pub time: u32,
@@ -133,8 +141,16 @@ fn main() -> R<()> {
     let screen = conn.setup().roots[screen_num].clone();
     let atoms = x::Atoms::new(&*conn)?.reply()?;
 
-    if conn.get_selection_owner(atoms._RDOCK_RUNNING)?.reply()?.owner != x11rb::NONE {
-        eprintln!("rdock já está em execução.");
+    let open_settings = std::env::args().any(|a| a == "--settings");
+    let owner = conn.get_selection_owner(atoms._RDOCK_RUNNING)?.reply()?.owner;
+    if owner != x11rb::NONE {
+        if open_settings {
+            // Pede à dock que já está rodando para abrir as preferências.
+            let ev = ClientMessageEvent::new(32, owner, atoms._RDOCK_SETTINGS, [0u32; 5]);
+            conn.send_event(false, owner, EventMask::NO_EVENT, ev)?.check()?;
+        } else {
+            eprintln!("rdock já está em execução.");
+        }
         return Ok(());
     }
     let visual = x::argb_visual(&screen).ok_or("o servidor X não tem visual ARGB de 32 bits (compositor necessário)")?;
@@ -159,13 +175,19 @@ fn main() -> R<()> {
         win_cache: HashMap::new(),
         running: HashMap::new(),
         pinned: HashSet::new(),
+        settings: config::load_settings(),
         own: Vec::new(),
         time: x11rb::CURRENT_TIME,
         buf: Vec::new(),
     };
     let mut dock = dock::Dock::new(&mut ctx)?;
     let mut lp = launchpad::Launchpad::new(&mut ctx)?;
-    conn.set_selection_owner(dock.win, atoms._RDOCK_RUNNING, x11rb::CURRENT_TIME)?;
+    let mut sw = settings::SettingsWin::new(&mut ctx)?;
+    // O dono da seleção é a janela do Launchpad, que nunca é recriada (a da dock é, ao mudar de borda).
+    conn.set_selection_owner(lp.win, atoms._RDOCK_RUNNING, x11rb::CURRENT_TIME)?;
+    if open_settings {
+        sw.open(&mut ctx)?;
+    }
 
     let (tx, rx) = mpsc::channel();
     let mut names = vec!["@launchpad".to_string()];
@@ -192,7 +214,7 @@ fn main() -> R<()> {
     let mut last_frame = Instant::now();
     let mut last_trash = Instant::now();
     loop {
-        let animating = dock.needs_frame || lp.needs_frame;
+        let animating = dock.needs_frame || lp.needs_frame || sw.needs_frame;
         let timeout = if animating { FRAME.saturating_sub(last_frame.elapsed()) } else { Duration::from_secs(2) };
         let mut msgs = Vec::new();
         match rx.recv_timeout(timeout) {
@@ -202,15 +224,15 @@ fn main() -> R<()> {
         }
         msgs.extend(rx.try_iter());
         for m in msgs {
-            for act in handle(&mut ctx, &mut dock, &mut lp, m) {
-                dispatch(&mut ctx, &mut dock, &mut lp, act)?;
+            for act in handle(&mut ctx, &mut dock, &mut lp, &mut sw, m) {
+                dispatch(&mut ctx, &mut dock, &mut lp, &mut sw, act)?;
             }
         }
         if last_trash.elapsed() > Duration::from_secs(2) {
             last_trash = Instant::now();
             dock.set_trash_full(dock::trash_is_full());
         }
-        if (dock.needs_frame || lp.needs_frame) && last_frame.elapsed() >= FRAME.mul_f32(0.9) {
+        if (dock.needs_frame || lp.needs_frame || sw.needs_frame) && last_frame.elapsed() >= FRAME.mul_f32(0.9) {
             let dt = last_frame.elapsed().as_secs_f32().min(1.0 / 30.0);
             last_frame = Instant::now();
             if dock.needs_frame {
@@ -221,7 +243,11 @@ fn main() -> R<()> {
                 lp.needs_frame = lp.tick(&mut ctx, dt);
                 lp.render(&mut ctx)?;
             }
-        } else if !(dock.needs_frame || lp.needs_frame) {
+            if sw.needs_frame {
+                sw.needs_frame = sw.tick(&ctx, dt);
+                sw.render(&mut ctx)?;
+            }
+        } else if !(dock.needs_frame || lp.needs_frame || sw.needs_frame) {
             // Ocioso: o próximo quadro começa com dt de um quadro, não do tempo parado.
             last_frame = Instant::now() - FRAME;
         }
@@ -230,7 +256,7 @@ fn main() -> R<()> {
     Ok(())
 }
 
-fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, msg: Msg) -> Vec<Action> {
+fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, sw: &mut settings::SettingsWin, msg: Msg) -> Vec<Action> {
     let ev = match msg {
         Msg::Icon(name, icon) => {
             ctx.icons.insert(name, icon);
@@ -249,6 +275,8 @@ fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, m
                 dock.on_motion(ctx, x, y);
             } else if lp.is_window(e.event) {
                 lp.on_motion(x, y);
+            } else if e.event == sw.win {
+                out.extend(sw.on_motion(ctx, x, y));
             }
         }
         Event::EnterNotify(e) if e.event == dock.win => {
@@ -263,6 +291,8 @@ fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, m
                 dock.on_press(ctx, e.detail, x, y);
             } else if lp.is_window(e.event) {
                 lp.on_press(ctx, e.detail, x, y);
+            } else if e.event == sw.win {
+                out.extend(sw.on_press(ctx, e.detail, x, y));
             }
         }
         Event::ButtonRelease(e) => {
@@ -272,6 +302,8 @@ fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, m
                 dock.on_release(ctx, e.detail, x, y)
             } else if lp.is_window(e.event) {
                 lp.on_release(ctx, e.detail, x, y)
+            } else if e.event == sw.win {
+                sw.on_release(ctx)
             } else {
                 None
             };
@@ -293,6 +325,16 @@ fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, m
                 dock.damage();
             } else if lp.is_window(e.window) {
                 lp.damage();
+            } else if e.window == sw.win {
+                sw.damage();
+            }
+        }
+        Event::ClientMessage(e) => {
+            let a = ctx.atoms;
+            if e.type_ == a._RDOCK_SETTINGS {
+                out.push(Action::OpenSettings);
+            } else if e.window == sw.win && e.type_ == a.WM_PROTOCOLS && e.data.as_data32()[0] == a.WM_DELETE_WINDOW {
+                sw.close(ctx);
             }
         }
         _ => {}
@@ -300,7 +342,16 @@ fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, m
     out
 }
 
-fn dispatch(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, act: Action) -> R<()> {
+fn dispatch(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, sw: &mut settings::SettingsWin, act: Action) -> R<()> {
+    let mut apply = |ctx: &mut Ctx, s: config::Settings, persist: bool| -> R<()> {
+        ctx.settings = s;
+        dock.apply(ctx)?;
+        sw.damage();
+        if persist {
+            config::save_settings(&s);
+        }
+        Ok(())
+    };
     match act {
         Action::Launch(app) => {
             dock.launch(ctx, app);
@@ -320,6 +371,16 @@ fn dispatch(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad,
             }
         }
         Action::OpenTrash => apps::open_uri("trash:///"),
+        Action::OpenSettings => {
+            lp.close(ctx);
+            sw.open(ctx)?;
+        }
+        Action::ToggleAutohide => apply(ctx, config::Settings { autohide: !ctx.settings.autohide, ..ctx.settings }, true)?,
+        Action::ToggleMagnification => {
+            apply(ctx, config::Settings { magnification: !ctx.settings.magnification, ..ctx.settings }, true)?
+        }
+        Action::SetEdge(edge) => apply(ctx, config::Settings { edge, ..ctx.settings }, true)?,
+        Action::ApplySettings(s, persist) => apply(ctx, s, persist)?,
     }
     Ok(())
 }
