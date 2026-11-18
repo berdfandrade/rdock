@@ -118,7 +118,9 @@ impl Ctx {
         let conn = self.conn.clone();
         let a = self.atoms;
         let win = x::prop32(&conn, self.root, a._NET_ACTIVE_WINDOW, AtomEnum::WINDOW).first().copied().unwrap_or(0);
-        if win != self.active_win && win != x11rb::NONE {
+        // Não mexer na máscara das nossas próprias janelas: para o mesmo cliente ela é substituída,
+        // e a janela de Preferências perderia cliques, movimento e redesenho.
+        if win != self.active_win && win != x11rb::NONE && !self.own.contains(&win) {
             let aux = ChangeWindowAttributesAux::new().event_mask(EventMask::STRUCTURE_NOTIFY | EventMask::PROPERTY_CHANGE);
             let _ = conn.change_window_attributes(win, &aux);
         }
