@@ -1,4 +1,4 @@
-# rdock
+# <img src="assets/rdock.svg" width="40" align="top"> rdock
 
 A macOS-style dock for X11 Linux desktops (Cinnamon, XFCE, MATE…), written in pure Rust with no GTK or Qt.
 
@@ -38,7 +38,7 @@ rdock draws everything itself on the CPU with [tiny-skia](https://github.com/Raz
 Every change applies immediately. Open the preferences in any of these ways:
 
 - right-click the dock shelf, a separator, the Launchpad or the Trash and choose *Preferências do Dock…*;
-- use the *Preferências do Dock* entry in your applications menu;
+- open **rdock** from your applications menu (it also starts the dock if it isn't running);
 - run:
 
 ```bash
@@ -59,6 +59,8 @@ rdock --settings
 cargo build --release
 ./target/release/rdock
 ```
+
+On startup rdock installs its icon and an **rdock** entry in your applications menu (`~/.local/share/applications/rdock.desktop`). The entry opens the preferences, and the Launchpad hides it.
 
 If you already run another dock such as Plank, stop it first. Otherwise it will sit on top of rdock at the bottom of the screen.
 
@@ -108,6 +110,7 @@ mkdir -p ~/.local/share/rdock/themes && cp themes/*.png ~/.local/share/rdock/the
 | `~/.config/rdock/pinned` | Pinned apps, one `.desktop` ID per line |
 | `~/.config/rdock/theme` | Name of the selected theme |
 | `~/.config/rdock/themes/` | Your theme PNGs |
+| `~/.local/share/applications/rdock.desktop` | Menu entry, written by rdock on startup |
 
 On the first run, the pinned list starts with your file manager, browser and terminal, plus your Cinnamon favourites.
 

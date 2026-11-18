@@ -238,6 +238,7 @@ fn main() -> R<()> {
     conn.create_colormap(ColormapAlloc::NONE, colormap, screen.root, visual)?;
     conn.change_window_attributes(screen.root, &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE))?;
 
+    apps::install_launcher();
     let apps = apps::scan();
     let (tx, rx) = mpsc::channel();
     let mut ctx = Ctx {

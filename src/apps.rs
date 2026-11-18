@@ -217,14 +217,50 @@ fn parse(path: &Path, id: String, locales: &[String], desktops: &[String]) -> Op
     let icon = get("Icon").filter(|s| !s.is_empty()).unwrap_or_else(|| "application-x-executable".into());
     Some(App {
         search: normalize(&format!("{name}\n{generic}\n{keywords}\n{stem}")),
-        id,
         name,
         icon,
         wm_class: get("StartupWMClass").unwrap_or_default().to_lowercase(),
         exec,
         path: path.to_path_buf(),
-        listed: true,
+        // A entrada da própria rdock fica no menu do sistema, mas não no Launchpad.
+        listed: id != LAUNCHER_ID,
+        id,
     })
+}
+
+const LAUNCHER_ID: &str = "rdock.desktop";
+const ICON_SVG: &str = include_str!("../assets/rdock.svg");
+
+/// Instala (ou atualiza) o ícone e a entrada de menu da rdock em ~/.local/share,
+/// para que ela apareça no menu do Cinnamon. Só escreve o que mudou.
+pub fn install_launcher() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let share = data_dirs().remove(0);
+    let icon = share.join("icons/hicolor/scalable/apps/rdock.svg");
+    let entry = format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=rdock\n\
+         GenericName=Dock\n\
+         Comment=Dock no estilo do macOS: abre as preferências (e inicia a dock se ela estiver fechada)\n\
+         Keywords=dock;plank;launcher;preferências;\n\
+         Exec=\"{}\" --settings\n\
+         Icon={}\n\
+         Categories=Settings;DesktopSettings;\n\
+         StartupWMClass=rdock-settings\n",
+        exe.display(),
+        icon.display()
+    );
+    let write = |path: PathBuf, data: &str| {
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(data) {
+            let _ = path.parent().map(std::fs::create_dir_all);
+            if let Err(e) = std::fs::write(&path, data) {
+                eprintln!("rdock: não foi possível escrever {}: {e}", path.display());
+            }
+        }
+    };
+    write(icon, ICON_SVG);
+    write(share.join("applications").join(LAUNCHER_ID), &entry);
 }
 
 pub fn find_in_path(prog: &str) -> Option<PathBuf> {
