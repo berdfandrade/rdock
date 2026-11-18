@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "A macOS-style dock for X11 Linux desktops, written in pure Rust"
 rust-version = "1.82"
+license = "MIT"
 
 [dependencies]
 x11rb = { version = "0.13", features = ["randr", "shape"] }

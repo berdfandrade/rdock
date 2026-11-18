@@ -131,3 +131,7 @@ A few details:
 - **Partial redraws.** Each frame clears and uploads only the region that changed.
 - **Cached shelf and icons.** The shelf is pre-rendered once and assembled with direct memory copies. Icons are cached at each integer size.
 - **Reserved space.** The dock reserves screen space through `_NET_WM_STRUT_PARTIAL`, except when hiding is enabled.
+
+## License
+
+[MIT](LICENSE)
