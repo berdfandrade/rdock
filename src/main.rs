@@ -31,7 +31,7 @@ pub enum Action {
     ToggleLaunchpad,
     OpenTrash,
     OpenSettings,
-    ToggleAutohide,
+    SetHide(config::HideMode),
     ToggleMagnification,
     SetEdge(config::Edge),
     /// Novas preferências; `true` = gravar em disco (falso durante o arraste de um slider).
@@ -61,6 +61,9 @@ pub struct Ctx {
     /// App → janelas, em ordem de empilhamento (a última é a do topo).
     pub running: HashMap<usize, Vec<Window>>,
     pub pinned: HashSet<usize>,
+    /// Janela ativa e seu retângulo na tela (com moldura), para a ocultação inteligente.
+    active_win: Window,
+    pub active_rect: Option<(i32, i32, i32, i32)>,
     pub settings: config::Settings,
     pub own: Vec<Window>,
     /// Último timestamp X recebido (usado ao ativar janelas).
@@ -108,6 +111,41 @@ impl Ctx {
                 self.running.entry(*app).or_default().push(w);
             }
         }
+    }
+
+    /// Relê a janela ativa e onde ela está. Passa a ouvir os movimentos dela (ConfigureNotify).
+    fn update_active(&mut self) {
+        let conn = self.conn.clone();
+        let a = self.atoms;
+        let win = x::prop32(&conn, self.root, a._NET_ACTIVE_WINDOW, AtomEnum::WINDOW).first().copied().unwrap_or(0);
+        if win != self.active_win && win != x11rb::NONE {
+            let aux = ChangeWindowAttributesAux::new().event_mask(EventMask::STRUCTURE_NOTIFY | EventMask::PROPERTY_CHANGE);
+            let _ = conn.change_window_attributes(win, &aux);
+        }
+        self.active_win = win;
+        self.active_rect = self.window_rect(win);
+    }
+
+    fn window_rect(&self, win: Window) -> Option<(i32, i32, i32, i32)> {
+        let conn = &self.conn;
+        let a = &self.atoms;
+        if win == x11rb::NONE || self.own.contains(&win) {
+            return None;
+        }
+        let ty = x::prop32(conn, win, a._NET_WM_WINDOW_TYPE, AtomEnum::ATOM);
+        let state = x::prop32(conn, win, a._NET_WM_STATE, AtomEnum::ATOM);
+        if ty.contains(&a._NET_WM_WINDOW_TYPE_DESKTOP) || ty.contains(&a._NET_WM_WINDOW_TYPE_DOCK) || state.contains(&a._NET_WM_STATE_HIDDEN) {
+            return None;
+        }
+        let attrs = conn.get_window_attributes(win).ok()?.reply().ok()?;
+        if attrs.map_state != MapState::VIEWABLE {
+            return None;
+        }
+        let g = conn.get_geometry(win).ok()?.reply().ok()?;
+        let t = conn.translate_coordinates(win, self.root, 0, 0).ok()?.reply().ok()?;
+        let f = x::prop32(conn, win, a._NET_FRAME_EXTENTS, AtomEnum::CARDINAL);
+        let (l, r, top, b) = if f.len() >= 4 { (f[0] as i32, f[1] as i32, f[2] as i32, f[3] as i32) } else { (0, 0, 0, 0) };
+        Some((t.dst_x as i32 - l, t.dst_y as i32 - top, g.width as i32 + l + r, g.height as i32 + top + b))
     }
 
     fn match_window(&mut self, win: Window, wm_class: &[u8]) -> usize {
@@ -175,6 +213,8 @@ fn main() -> R<()> {
         win_cache: HashMap::new(),
         running: HashMap::new(),
         pinned: HashSet::new(),
+        active_win: x11rb::NONE,
+        active_rect: None,
         settings: config::load_settings(),
         own: Vec::new(),
         time: x11rb::CURRENT_TIME,
@@ -208,6 +248,7 @@ fn main() -> R<()> {
     });
 
     ctx.scan_clients();
+    ctx.update_active();
     dock.sync_running(&ctx);
     conn.flush()?;
 
@@ -320,6 +361,27 @@ fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, s
                 ctx.scan_clients();
                 dock.sync_running(ctx);
             }
+            if e.atom == a._NET_ACTIVE_WINDOW || e.atom == a._NET_CLIENT_LIST_STACKING {
+                ctx.update_active();
+                dock.needs_frame = true;
+            }
+        }
+        // A janela ativa mudou de lugar, foi minimizada ou restaurada.
+        Event::PropertyNotify(e) if e.window == ctx.active_win && e.atom == ctx.atoms._NET_WM_STATE => {
+            ctx.update_active();
+            dock.needs_frame = true;
+        }
+        Event::ConfigureNotify(e) if e.window == ctx.active_win => {
+            ctx.update_active();
+            dock.needs_frame = true;
+        }
+        Event::UnmapNotify(e) if e.window == ctx.active_win => {
+            ctx.update_active();
+            dock.needs_frame = true;
+        }
+        Event::MapNotify(e) if e.window == ctx.active_win => {
+            ctx.update_active();
+            dock.needs_frame = true;
         }
         Event::Expose(e) if e.count == 0 => {
             if e.window == dock.win {
@@ -379,7 +441,7 @@ fn dispatch(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad,
             lp.close(ctx);
             sw.open(ctx)?;
         }
-        Action::ToggleAutohide => apply(ctx, config::Settings { autohide: !ctx.settings.autohide, ..ctx.settings }, true)?,
+        Action::SetHide(hide) => apply(ctx, config::Settings { hide, ..ctx.settings }, true)?,
         Action::ToggleMagnification => {
             apply(ctx, config::Settings { magnification: !ctx.settings.magnification, ..ctx.settings }, true)?
         }

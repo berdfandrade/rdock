@@ -53,6 +53,16 @@ pub enum Edge {
     Right,
 }
 
+/// Quando a dock se esconde.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HideMode {
+    Never,
+    /// Sempre que o mouse não está nela.
+    Always,
+    /// Só quando a janela ativa encosta nela (como os painéis do Cinnamon).
+    Smart,
+}
+
 /// Preferências da dock: `~/.config/rdock/settings` (chave=valor).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Settings {
@@ -60,7 +70,7 @@ pub struct Settings {
     pub magnification: bool,
     pub max_size: f32,
     pub edge: Edge,
-    pub autohide: bool,
+    pub hide: HideMode,
     pub bounce: bool,
     pub indicators: bool,
     /// Multiplica o tamanho de todo texto da interface.
@@ -76,7 +86,7 @@ pub const TEXT_MAX: f32 = 1.8;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { icon_size: 52.0, magnification: true, max_size: 96.0, edge: Edge::Bottom, autohide: false, bounce: true, indicators: true, text_scale: 1.3 }
+        Settings { icon_size: 52.0, magnification: true, max_size: 96.0, edge: Edge::Bottom, hide: HideMode::Never, bounce: true, indicators: true, text_scale: 1.3 }
     }
 }
 
@@ -110,7 +120,15 @@ pub fn load_settings() -> Settings {
                     _ => Edge::Bottom,
                 }
             }
-            "autohide" => s.autohide = flag(s.autohide),
+            // compatibilidade com a versão anterior
+            "autohide" if flag(false) => s.hide = HideMode::Always,
+            "hide" => {
+                s.hide = match v {
+                    "always" => HideMode::Always,
+                    "smart" => HideMode::Smart,
+                    _ => HideMode::Never,
+                }
+            }
             "bounce" => s.bounce = flag(s.bounce),
             "indicators" => s.indicators = flag(s.indicators),
             "text_scale" => s.text_scale = num(s.text_scale).clamp(TEXT_MIN, TEXT_MAX),
@@ -126,9 +144,14 @@ pub fn save_settings(s: &Settings) {
         Edge::Bottom => "bottom",
         Edge::Right => "right",
     };
+    let hide = match s.hide {
+        HideMode::Never => "never",
+        HideMode::Always => "always",
+        HideMode::Smart => "smart",
+    };
     let text = format!(
-        "icon_size={}\nmagnification={}\nmax_size={}\nposition={edge}\nautohide={}\nbounce={}\nindicators={}\ntext_scale={:.2}\n",
-        s.icon_size, s.magnification, s.max_size, s.autohide, s.bounce, s.indicators, s.text_scale
+        "icon_size={}\nmagnification={}\nmax_size={}\nposition={edge}\nhide={hide}\nbounce={}\nindicators={}\ntext_scale={:.2}\n",
+        s.icon_size, s.magnification, s.max_size, s.bounce, s.indicators, s.text_scale
     );
     let p = settings_path();
     if let Some(dir) = p.parent() {

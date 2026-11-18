@@ -7,7 +7,7 @@ use x11rb::protocol::xproto::*;
 use x11rb::wrapper::ConnectionExt as _;
 
 use crate::anim::Spring;
-use crate::config::{Edge, Settings, ICON_MAX, ICON_MIN, MAG_MAX, MAG_MIN, TEXT_MAX, TEXT_MIN};
+use crate::config::{Edge, HideMode, Settings, ICON_MAX, ICON_MIN, MAG_MAX, MAG_MIN, TEXT_MAX, TEXT_MIN};
 use crate::draw;
 use crate::{x, Action, Ctx, R};
 
@@ -23,7 +23,8 @@ const ROW_MAG: f32 = 114.0;
 const ROW_EDGE: f32 = 182.0;
 const ROW_TEXT: f32 = 250.0;
 const DIVIDER: f32 = 296.0;
-const ROW_TOGGLES: [f32; 3] = [338.0, 384.0, 430.0];
+const ROW_HIDE: f32 = 338.0;
+const ROW_TOGGLES: [f32; 2] = [384.0, 430.0];
 const SWITCH_W: f32 = 40.0;
 const SWITCH_H: f32 = 24.0;
 const MAG_SLIDER_X: f32 = CTRL_X + SWITCH_W + 18.0;
@@ -41,14 +42,24 @@ pub struct SettingsWin {
     pix: Pixmap,
     pub visible: bool,
     /// Ampliação, ocultar, bounce, indicadores.
-    switches: [Spring; 4],
+    /// Ampliação, bounce, indicadores.
+    switches: [Spring; 3],
     segment: Spring,
+    hide_segment: Spring,
     active: Option<Slider>,
     pub needs_frame: bool,
 }
 
-fn switch_values(s: &Settings) -> [bool; 4] {
-    [s.magnification, s.autohide, s.bounce, s.indicators]
+fn switch_values(s: &Settings) -> [bool; 3] {
+    [s.magnification, s.bounce, s.indicators]
+}
+
+fn hide_index(h: HideMode) -> f32 {
+    match h {
+        HideMode::Never => 0.0,
+        HideMode::Always => 1.0,
+        HideMode::Smart => 2.0,
+    }
 }
 
 fn edge_index(e: Edge) -> f32 {
@@ -79,8 +90,8 @@ fn slider_span(s: Slider) -> (f32, f32, f32) {
     }
 }
 
-fn segment_rect() -> (f32, f32, f32, f32) {
-    (CTRL_X, ROW_EDGE - 15.0, CTRL_END - CTRL_X, 30.0)
+fn segment_rect(cy: f32) -> (f32, f32, f32, f32) {
+    (CTRL_X, cy - 15.0, CTRL_END - CTRL_X, 30.0)
 }
 
 impl SettingsWin {
@@ -112,6 +123,7 @@ impl SettingsWin {
             visible: false,
             switches: sw,
             segment: Spring::new(edge_index(s.edge), 400.0, 0.8),
+            hide_segment: Spring::new(hide_index(s.hide), 400.0, 0.8),
             active: None,
             needs_frame: false,
         })
@@ -179,24 +191,28 @@ impl SettingsWin {
                 return Some(Action::ApplySettings(Self::with_slider(s, which, x), false));
             }
         }
-        for i in 0..4 {
+        for i in 0..3 {
             let (rx, ry, rw, rh) = switch_rect(i);
             // Nas linhas de baixo, clicar no texto também alterna (como num checkbox).
             let hit = if i == 0 { in_rect(x, y, (rx - 4.0, ry - 4.0, rw + 8.0, rh + 8.0)) } else { (y - (ry + rh / 2.0)).abs() <= 18.0 };
             if hit {
                 match i {
                     0 => s.magnification = !s.magnification,
-                    1 => s.autohide = !s.autohide,
-                    2 => s.bounce = !s.bounce,
+                    1 => s.bounce = !s.bounce,
                     _ => s.indicators = !s.indicators,
                 }
                 return Some(Action::ApplySettings(s, true));
             }
         }
-        let seg = segment_rect();
+        let pick = |seg: (f32, f32, f32, f32)| (((x - seg.0) / seg.2) * 3.0).floor().clamp(0.0, 2.0) as usize;
+        let seg = segment_rect(ROW_EDGE);
         if in_rect(x, y, seg) {
-            let k = (((x - seg.0) / seg.2) * 3.0).floor().clamp(0.0, 2.0) as usize;
-            s.edge = [Edge::Left, Edge::Bottom, Edge::Right][k];
+            s.edge = [Edge::Left, Edge::Bottom, Edge::Right][pick(seg)];
+            return Some(Action::ApplySettings(s, true));
+        }
+        let seg = segment_rect(ROW_HIDE);
+        if in_rect(x, y, seg) {
+            s.hide = [HideMode::Never, HideMode::Always, HideMode::Smart][pick(seg)];
             return Some(Action::ApplySettings(s, true));
         }
         None
@@ -224,6 +240,8 @@ impl SettingsWin {
         }
         self.segment.target = edge_index(s.edge);
         anim |= self.segment.step(dt);
+        self.hide_segment.target = hide_index(s.hide);
+        anim |= self.hide_segment.step(dt);
         anim
     }
 
@@ -257,6 +275,22 @@ impl SettingsWin {
         let kr = if pressed { 10.5 } else { 9.5 };
         draw::shadow_n(&mut self.pix, kx - kr, cy - kr, 2.0 * kr, 2.0 * kr, kr, 0.9, id, 4);
         draw::circle(&mut self.pix, kx, cy, kr, &draw::color(255, 255, 255, a));
+    }
+
+    /// Controle segmentado de 3 opções com seleção deslizante (`pos` = índice animado).
+    fn segmented(&mut self, ctx: &mut Ctx, cy: f32, labels: [&str; 3], pos: f32) {
+        let id = Transform::identity();
+        let (sx, sy, sw, sh) = segment_rect(cy);
+        draw::fill(&mut self.pix, &draw::rrect(sx, sy, sw, sh, 8.0), &draw::color(255, 255, 255, 0.09), id);
+        let seg_w = sw / 3.0;
+        let px = sx + 2.0 + pos * seg_w;
+        draw::shadow_n(&mut self.pix, px, sy + 2.0, seg_w - 4.0, sh - 4.0, 6.0, 0.6, id, 3);
+        draw::fill(&mut self.pix, &draw::rrect(px, sy + 2.0, seg_w - 4.0, sh - 4.0, 6.0), &draw::color(100, 100, 106, 1.0), id);
+        for (k, l) in labels.iter().enumerate() {
+            let w = ctx.text.width(l, Self::fit(ctx, 15.0));
+            let near = (1.0 - (pos - k as f32).abs()).max(0.0);
+            self.label(ctx, l, sx + k as f32 * seg_w + (seg_w - w) / 2.0 - 2.0, cy, 15.0, 0.7 + 0.3 * near);
+        }
     }
 
     fn switch(&mut self, i: usize) {
@@ -298,17 +332,7 @@ impl SettingsWin {
 
         // Posição na tela (controle segmentado com seleção deslizante)
         self.label(ctx, "Posição na tela", LABEL_X, ROW_EDGE, 16.0, 0.92);
-        let (sx, sy, sw, sh) = segment_rect();
-        draw::fill(&mut self.pix, &draw::rrect(sx, sy, sw, sh, 8.0), &draw::color(255, 255, 255, 0.09), id);
-        let seg_w = sw / 3.0;
-        let px = sx + 2.0 + self.segment.value * seg_w;
-        draw::shadow_n(&mut self.pix, px, sy + 2.0, seg_w - 4.0, sh - 4.0, 6.0, 0.6, id, 3);
-        draw::fill(&mut self.pix, &draw::rrect(px, sy + 2.0, seg_w - 4.0, sh - 4.0, 6.0), &draw::color(100, 100, 106, 1.0), id);
-        for (k, l) in ["Esquerda", "Embaixo", "Direita"].iter().enumerate() {
-            let w = ctx.text.width(l, Self::fit(ctx, 15.0));
-            let near = (1.0 - (self.segment.value - k as f32).abs()).max(0.0);
-            self.label(ctx, l, sx + k as f32 * seg_w + (seg_w - w) / 2.0 - 2.0, ROW_EDGE, 15.0, 0.7 + 0.3 * near);
-        }
+        self.segmented(ctx, ROW_EDGE, ["Esquerda", "Embaixo", "Direita"], self.segment.value);
 
         // Tamanho do texto
         self.label(ctx, "Tamanho do texto", LABEL_X, ROW_TEXT, 16.0, 0.92);
@@ -322,7 +346,11 @@ impl SettingsWin {
             self.pix.fill_rect(r, &draw::color(255, 255, 255, 0.1), id, None);
         }
 
-        let toggles = ["Ocultar e mostrar a Dock automaticamente", "Animar a abertura de aplicativos", "Mostrar indicadores de aplicativos abertos"];
+        // Ocultar: nunca, sempre (sem o mouse) ou inteligente (quando a janela ativa encosta)
+        self.label(ctx, "Ocultar a Dock", LABEL_X, ROW_HIDE, 16.0, 0.92);
+        self.segmented(ctx, ROW_HIDE, ["Nunca", "Sempre", "Inteligente"], self.hide_segment.value);
+
+        let toggles = ["Animar a abertura de aplicativos", "Mostrar indicadores de aplicativos abertos"];
         for (i, l) in toggles.iter().enumerate() {
             self.label(ctx, l, LABEL_X, ROW_TOGGLES[i], 16.0, 0.92);
             self.switch(i + 1);

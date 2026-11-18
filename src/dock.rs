@@ -16,7 +16,7 @@ use x11rb::protocol::xproto::*;
 use x11rb::wrapper::ConnectionExt as _;
 
 use crate::anim::{ease_out_cubic, Spring};
-use crate::config::{self, Edge, Settings};
+use crate::config::{self, Edge, HideMode, Settings};
 use crate::draw;
 use crate::menu::Menu;
 use crate::{x, Action, Ctx, R};
@@ -110,6 +110,8 @@ pub struct Dock {
     pub win: Window,
     gc: Gcontext,
     pix: Pixmap,
+    /// Canto da janela na tela (para comparar com a janela ativa).
+    origin: (i32, i32),
     /// Largura e altura da janela; comprimento do eixo `u`; espessura (eixo `v`).
     ww: f32,
     wh: f32,
@@ -213,6 +215,7 @@ impl Dock {
         let mut dock = Dock {
             win: x11rb::NONE,
             gc: x11rb::NONE,
+            origin: (0, 0),
             pix: Pixmap::new(1, 1).ok_or("pixmap")?,
             ww: 0.0,
             wh: 0.0,
@@ -233,7 +236,7 @@ impl Dock {
             shape: (0, 0, 0, 0),
             trash_full: trash_is_full(),
             shelf: build_shelf(s.icon_size, s.edge),
-            hide: Spring::new(if s.autohide { 1.0 } else { 0.0 }, 260.0, 1.0),
+            hide: Spring::new(if s.hide == HideMode::Always { 1.0 } else { 0.0 }, 260.0, 1.0),
             left_at: None,
             needs_frame: true,
         };
@@ -300,6 +303,7 @@ impl Dock {
 
         self.win = win;
         self.gc = gc;
+        self.origin = (geom.0, geom.1);
         self.ww = geom.2 as f32;
         self.wh = geom.3 as f32;
         (self.len, self.thick) = if self.s.edge == Edge::Bottom { (self.ww, self.wh) } else { (self.wh, self.ww) };
@@ -317,7 +321,7 @@ impl Dock {
         let (ib, il, ir) = self.insets;
         let size = (MARGIN + shelf_t(self.s.icon_size)) as u32;
         let mut st = [0u32; 12];
-        if !self.s.autohide {
+        if self.s.hide == HideMode::Never {
             match self.s.edge {
                 Edge::Bottom => (st[3], st[10], st[11]) = (ib as u32 + size, mx as u32, (mx + mw - 1) as u32),
                 Edge::Left => (st[0], st[4], st[5]) = (il as u32 + size, my as u32, (my + mh - 1) as u32),
@@ -351,7 +355,7 @@ impl Dock {
             }
             (self.press, self.drag, self.mouse) = (None, None, None);
             self.create_window(ctx)?;
-        } else if s.icon_size != old.icon_size || s.autohide != old.autohide {
+        } else if s.icon_size != old.icon_size || s.hide != old.hide {
             self.set_strut(ctx)?;
         }
         self.damage();
@@ -441,6 +445,17 @@ impl Dock {
             Edge::Left => (ax, ay - h / 2.0),
             Edge::Right => (ax - w, ay - h / 2.0),
         }
+    }
+
+    /// A área da dock (visível, sem ampliação) cruza o retângulo da janela ativa?
+    fn overlaps(&self, rect: Option<(i32, i32, i32, i32)>) -> bool {
+        let Some((rx, ry, rw, rh)) = rect else { return false };
+        let (_, u0, u1) = self.layout(false);
+        let b = self.rect_win(u0, u1, 0.0, self.shelf_far() + 2.0, true);
+        let (ox, oy) = (self.origin.0 as f32, self.origin.1 as f32);
+        let (x0, y0, x1, y1) = (b.0 + ox, b.1 + oy, b.2 + ox, b.3 + oy);
+        let (rx0, ry0, rx1, ry1) = (rx as f32, ry as f32, (rx + rw) as f32, (ry + rh) as f32);
+        x0 < rx1 && rx0 < x1 && y0 < ry1 && ry0 < y1
     }
 
     fn mag(&self, d: f32) -> f32 {
@@ -726,9 +741,13 @@ impl Dock {
     fn open_dock_menu(&mut self, ctx: &mut Ctx, u: f32) {
         let s = self.s;
         let mut items = vec![
-            (if s.autohide { "Desativar ocultação automática" } else { "Ativar ocultação automática" }.to_string(), Action::ToggleAutohide),
             (if s.magnification { "Desativar ampliação" } else { "Ativar ampliação" }.to_string(), Action::ToggleMagnification),
         ];
+        for (mode, l) in [(HideMode::Never, "Nunca ocultar"), (HideMode::Always, "Ocultar sempre"), (HideMode::Smart, "Ocultação inteligente")] {
+            if mode != s.hide {
+                items.insert(items.len() - 1, (l.to_string(), Action::SetHide(mode)));
+            }
+        }
         for (edge, l) in [(Edge::Left, "Posicionar à esquerda"), (Edge::Bottom, "Posicionar embaixo"), (Edge::Right, "Posicionar à direita")] {
             if edge != s.edge {
                 items.push((l.to_string(), Action::SetEdge(edge)));
@@ -863,9 +882,15 @@ impl Dock {
             }
         }
 
-        // Ocultação automática: some depois de um tempo sem o mouse; volta ao tocar a borda.
+        // Ocultação: "sempre" some sem o mouse; "inteligente" só quando a janela ativa encosta na dock.
+        // Nos dois casos ela volta quando o mouse toca a borda.
         let engaged = self.mouse.is_some() || self.menu.is_some() || self.drag.is_some() || self.press.is_some();
-        if !self.s.autohide || engaged {
+        let wants_hide = match self.s.hide {
+            HideMode::Never => false,
+            HideMode::Always => true,
+            HideMode::Smart => self.overlaps(ctx.active_rect),
+        };
+        if !wants_hide || engaged {
             self.hide.target = 0.0;
             self.left_at = None;
         } else {
@@ -1067,7 +1092,7 @@ impl Dock {
         x::put_region(&ctx.conn, self.win, self.gc, &self.pix, (x0, y0, x1 - x0, y1 - y0), &mut ctx.buf)?;
 
         // Região de entrada: só a dock recebe cliques. Oculta, só uma faixa fina na borda.
-        let reach = if self.s.autohide && self.hide.target == 1.0 {
+        let reach = if self.s.hide != HideMode::Never && self.hide.target == 1.0 {
             2.0
         } else if self.mouse.is_some() {
             base + icon * self.s.max_scale() + 8.0
