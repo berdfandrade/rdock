@@ -162,3 +162,55 @@ pub fn save_settings(s: &Settings) {
         let _ = std::fs::rename(&tmp, &p);
     }
 }
+
+/// Tema da prateleira: o vidro embutido ou um PNG de uma pasta de temas.
+#[derive(Clone, Debug)]
+pub struct Theme {
+    pub name: String,
+    pub path: Option<PathBuf>,
+}
+
+pub const DEFAULT_THEME: &str = "Vidro";
+
+/// Pasta onde o usuário coloca seus temas.
+pub fn user_theme_dir() -> PathBuf {
+    path().with_file_name("themes")
+}
+
+/// Temas disponíveis: o embutido primeiro, depois os PNGs de `~/.config/rdock/themes`
+/// e `~/.local/share/rdock/themes` (o primeiro nome encontrado vence).
+pub fn list_themes() -> Vec<Theme> {
+    let mut found: Vec<Theme> = Vec::new();
+    let dirs = [user_theme_dir(), crate::apps::data_dirs()[0].join("rdock/themes")];
+    for dir in dirs {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for p in rd.flatten().map(|e| e.path()) {
+            if !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("png")) {
+                continue;
+            }
+            let name = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            if !name.is_empty() && name != DEFAULT_THEME && !found.iter().any(|t| t.name == name) {
+                found.push(Theme { name, path: Some(p) });
+            }
+        }
+    }
+    found.sort_by_key(|t| crate::apps::normalize(&t.name));
+    found.insert(0, Theme { name: DEFAULT_THEME.into(), path: None });
+    found
+}
+
+fn theme_file() -> PathBuf {
+    path().with_file_name("theme")
+}
+
+pub fn load_theme_name() -> String {
+    std::fs::read_to_string(theme_file()).map(|s| s.trim().to_string()).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| DEFAULT_THEME.into())
+}
+
+pub fn save_theme_name(name: &str) {
+    let p = theme_file();
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(p, format!("{name}\n"));
+}

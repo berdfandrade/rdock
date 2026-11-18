@@ -56,6 +56,23 @@ Tudo é aplicado na hora: tamanho dos ícones, ampliação (liga/desliga e taman
 Os apps fixados ficam em `~/.config/rdock/pinned`, com um ID `.desktop` por linha.
 Na primeira execução, a lista é montada com o gerenciador de arquivos, o navegador, o terminal e os favoritos do Cinnamon.
 
+## Temas
+
+Um tema é **um PNG simples** com o desenho da prateleira na horizontal (como ela fica embaixo da tela).
+
+- A imagem é escalada para a altura da prateleira.
+- É dividida em 3 faixas verticais: as duas pontas (cada uma com **1/3 da altura** da imagem) ficam fixas, e o **meio é repetido** conforme a dock cresce. Mantenha os cantos arredondados dentro das pontas e faça o meio "ladrilhável".
+- Na esquerda/direita da tela a imagem é girada automaticamente: a base do PNG fica sempre virada para a borda da tela.
+- Transparência funciona (o canal alfa do PNG é usado).
+
+Coloque o arquivo em `~/.config/rdock/themes/` (o nome do arquivo vira o nome do tema) e escolha em *Preferências → Tema*. O link "Abrir pasta de temas" abre essa pasta. Temas de exemplo (Grafite, Gelo, Neon, Pôr do sol, Madeira) ficam em [`themes/`](themes/); para instalá-los:
+
+```bash
+mkdir -p ~/.local/share/rdock/themes && cp themes/*.png ~/.local/share/rdock/themes/
+```
+
+O tema escolhido fica salvo em `~/.config/rdock/theme`. "Vidro" é o tema embutido.
+
 ## Estrutura
 
 | Arquivo | Função |

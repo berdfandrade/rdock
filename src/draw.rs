@@ -183,35 +183,46 @@ pub fn clear_rect(pix: &mut Pixmap, x0: i32, y0: i32, x1: i32, y1: i32) {
     }
 }
 
-/// Copia `src` sobre `dst` em (x, y). Uma fonte de 1px de largura é esticada para `w` colunas;
-/// uma de 1px de altura, para `h` linhas (9-slice). Sobrescreve: use só onde o destino está transparente.
+/// Preenche o retângulo w×h em (x, y) repetindo `src` (ladrilhado a partir do canto).
+/// Com w×h igual ao tamanho de `src` é uma cópia simples. Sobrescreve os pixels:
+/// use só onde o destino ainda está transparente (9-slice da prateleira).
 pub fn copy(dst: &mut Pixmap, src: &Pixmap, x: i32, y: i32, w: i32, h: i32) {
     let (dw, dh) = (dst.width() as i32, dst.height() as i32);
     let (sw, sh) = (src.width() as i32, src.height() as i32);
-    let (stretch_x, stretch_y) = (sw == 1 && w != 1, sh == 1 && h != 1);
-    let w = if stretch_x { w } else { sw };
-    let h = if stretch_y { h } else { sh };
     let (x0, x1) = (x.max(0), (x + w).min(dw));
-    if x1 <= x0 {
+    if x1 <= x0 || sw == 0 || sh == 0 {
         return;
     }
     let sdata = src.data();
     let ddata = dst.data_mut();
     for dy in y.max(0)..(y + h).min(dh) {
-        let sy = if stretch_y { 0 } else { dy - y };
+        let sy = (dy - y) % sh;
+        let srow = &sdata[(sy * sw) as usize * 4..((sy + 1) * sw) as usize * 4];
         let drow = (dy * dw) as usize * 4;
-        let srow = (sy * sw) as usize * 4;
-        let out = &mut ddata[drow + x0 as usize * 4..drow + x1 as usize * 4];
-        if stretch_x {
-            let px = &sdata[srow..srow + 4];
-            for c in out.chunks_exact_mut(4) {
-                c.copy_from_slice(px);
-            }
-        } else {
-            let off = (x0 - x) as usize * 4;
-            out.copy_from_slice(&sdata[srow + off..srow + off + out.len()]);
+        let mut dx = x0;
+        while dx < x1 {
+            let sx = (dx - x) % sw;
+            let n = (sw - sx).min(x1 - dx);
+            ddata[drow + dx as usize * 4..drow + (dx + n) as usize * 4].copy_from_slice(&srow[sx as usize * 4..(sx + n) as usize * 4]);
+            dx += n;
         }
     }
+}
+
+/// Gira 90° no sentido horário (`cw`) ou anti-horário.
+pub fn rotate(src: &Pixmap, cw: bool) -> Pixmap {
+    let (w, h) = (src.width(), src.height());
+    let mut out = Pixmap::new(h, w).unwrap();
+    let (s, d) = (src.data(), out.data_mut());
+    for y in 0..h {
+        for x in 0..w {
+            let (nx, ny) = if cw { (h - 1 - y, x) } else { (y, w - 1 - x) };
+            let si = ((y * w + x) * 4) as usize;
+            let di = ((ny * h + nx) * 4) as usize;
+            d[di..di + 4].copy_from_slice(&s[si..si + 4]);
+        }
+    }
+    out
 }
 
 pub struct Text {

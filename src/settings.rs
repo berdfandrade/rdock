@@ -12,7 +12,7 @@ use crate::draw;
 use crate::{x, Action, Ctx, R};
 
 const W: f32 = 640.0;
-const H: f32 = 470.0;
+const H: f32 = 540.0;
 const LABEL_X: f32 = 28.0;
 const CTRL_X: f32 = 270.0;
 const CTRL_END: f32 = W - 28.0;
@@ -22,9 +22,11 @@ const ROW_SIZE: f32 = 46.0;
 const ROW_MAG: f32 = 114.0;
 const ROW_EDGE: f32 = 182.0;
 const ROW_TEXT: f32 = 250.0;
-const DIVIDER: f32 = 296.0;
-const ROW_HIDE: f32 = 338.0;
-const ROW_TOGGLES: [f32; 2] = [384.0, 430.0];
+const ROW_THEME: f32 = 316.0;
+const THEME_BTN: f32 = 34.0;
+const DIVIDER: f32 = 366.0;
+const ROW_HIDE: f32 = 408.0;
+const ROW_TOGGLES: [f32; 2] = [454.0, 500.0];
 const SWITCH_W: f32 = 40.0;
 const SWITCH_H: f32 = 24.0;
 const MAG_SLIDER_X: f32 = CTRL_X + SWITCH_W + 18.0;
@@ -204,6 +206,22 @@ impl SettingsWin {
                 return Some(Action::ApplySettings(s, true));
             }
         }
+        // Tema: setas para trocar, link para abrir a pasta de temas.
+        let (tx, ty, tw, th) = segment_rect(ROW_THEME);
+        if (y - ROW_THEME).abs() <= th / 2.0 && ctx.themes.len() > 1 {
+            let n = ctx.themes.len();
+            let cur = ctx.themes.iter().position(|t| t.name == ctx.theme).unwrap_or(0);
+            if x >= tx && x <= tx + THEME_BTN {
+                return Some(Action::SetTheme((cur + n - 1) % n));
+            }
+            if x >= tx + tw - THEME_BTN && x <= tx + tw {
+                return Some(Action::SetTheme((cur + 1) % n));
+            }
+        }
+        let link_w = ctx.text.width("Abrir pasta de temas", Self::fit(ctx, 13.0));
+        if in_rect(x, y, (tx, ty + th + 2.0, link_w + 4.0, 20.0)) {
+            return Some(Action::OpenThemeFolder);
+        }
         let pick = |seg: (f32, f32, f32, f32)| (((x - seg.0) / seg.2) * 3.0).floor().clamp(0.0, 2.0) as usize;
         let seg = segment_rect(ROW_EDGE);
         if in_rect(x, y, seg) {
@@ -341,6 +359,23 @@ impl SettingsWin {
         self.label(ctx, "A", CTRL_X - 2.0, ROW_TEXT + 24.0, 11.0, 0.5);
         self.label(ctx, &pct, (CTRL_X + CTRL_END) / 2.0 - 16.0, ROW_TEXT + 24.0, 12.0, 0.6);
         self.label_right(ctx, "A", CTRL_END + 2.0, ROW_TEXT + 24.0, 17.0, 0.5);
+
+        // Tema
+        self.label(ctx, "Tema", LABEL_X, ROW_THEME, 16.0, 0.92);
+        let (tx, ty, tw, th) = segment_rect(ROW_THEME);
+        draw::fill(&mut self.pix, &draw::rrect(tx, ty, tw, th, 8.0), &draw::color(255, 255, 255, 0.09), id);
+        for bx in [tx + 2.0, tx + tw - THEME_BTN - 2.0] {
+            draw::fill(&mut self.pix, &draw::rrect(bx, ty + 2.0, THEME_BTN, th - 4.0, 6.0), &draw::color(100, 100, 106, 1.0), id);
+        }
+        self.label(ctx, "‹", tx + 2.0 + THEME_BTN / 2.0 - 5.0, ROW_THEME - 1.0, 20.0, 0.95);
+        self.label(ctx, "›", tx + tw - THEME_BTN / 2.0 - 7.0, ROW_THEME - 1.0, 20.0, 0.95);
+        let n = ctx.themes.len();
+        let cur = ctx.themes.iter().position(|t| t.name == ctx.theme).unwrap_or(0);
+        let name = format!("{}   ({}/{})", ctx.theme, cur + 1, n);
+        let nw = ctx.text.width(&name, Self::fit(ctx, 15.0));
+        self.label(ctx, &name, tx + (tw - nw) / 2.0 - 2.0, ROW_THEME, 15.0, 0.95);
+        let tp = ctx.text.get("Abrir pasta de temas", Self::fit(ctx, 13.0), 0x4da3ff);
+        draw::blit(&mut self.pix, tp, Transform::from_translate(tx - 2.0, ty + th + 3.0), 1.0);
 
         if let Some(r) = tiny_skia::Rect::from_xywh(LABEL_X, DIVIDER, W - 2.0 * LABEL_X, 1.0) {
             self.pix.fill_rect(r, &draw::color(255, 255, 255, 0.1), id, None);

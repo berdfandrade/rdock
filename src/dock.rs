@@ -176,9 +176,44 @@ fn radius(icon: f32) -> f32 {
     (shelf_t(icon) * 0.27).min(18.0)
 }
 
-/// Renderiza a prateleira (sombra, gradiente, bordas) uma vez e corta em 3 partes (9-slice):
+/// Peças da prateleira: o tema PNG, se houver e carregar, senão o vidro embutido.
+fn build_shelf(icon: f32, edge: Edge, theme: Option<&std::path::Path>) -> [Pixmap; 3] {
+    theme.and_then(|p| build_theme_shelf(icon, edge, p)).unwrap_or_else(|| build_glass(icon, edge))
+}
+
+/// Tema PNG: a imagem (desenhada na horizontal) é escalada para a espessura da prateleira e
+/// dividida em 3 faixas: as pontas (1/3 do lado menor cada) ficam fixas e o meio é repetido.
+/// Nas bordas laterais as peças são giradas.
+fn build_theme_shelf(icon: f32, edge: Edge, path: &std::path::Path) -> Option<[Pixmap; 3]> {
+    let src = Pixmap::decode_png(&std::fs::read(path).ok()?).ok()?;
+    let st = shelf_t(icon);
+    let k = st / src.height() as f32;
+    let (w, h) = (((src.width() as f32) * k).round().max(3.0), st);
+    let mut img = Pixmap::new(w as u32, h as u32)?;
+    let paint = tiny_skia::PixmapPaint { quality: tiny_skia::FilterQuality::Bicubic, ..Default::default() };
+    img.draw_pixmap(0, 0, src.as_ref(), &paint, Transform::from_scale(w / src.width() as f32, k), None);
+    let b = ((src.width().min(src.height()) as f32 / 3.0) * k).round().clamp(1.0, (w - 1.0) / 2.0);
+    let mid_w = (w - 2.0 * b).max(1.0);
+    let pad = SHELF_PAD;
+    // Cada peça leva a margem transparente SHELF_PAD, como o vidro (o desenho conta com ela).
+    let piece = |sx: f32, cw: f32, pad_l: f32, pad_r: f32| -> Pixmap {
+        let mut p = Pixmap::new((cw + pad_l + pad_r) as u32, (h + 2.0 * pad) as u32).unwrap();
+        let part = img.clone_rect(IntRect::from_xywh(sx as i32, 0, cw as u32, h as u32).unwrap()).unwrap();
+        draw::copy(&mut p, &part, pad_l as i32, pad as i32, cw as i32, h as i32);
+        p
+    };
+    let (l, m, r) = (piece(0.0, b, pad, 0.0), piece(b, mid_w, 0.0, 0.0), piece(w - b, b, 0.0, pad));
+    Some(match edge {
+        Edge::Bottom => [l, m, r],
+        // A base da imagem (lado da borda da tela) passa a apontar para a esquerda/direita.
+        Edge::Left => [draw::rotate(&l, true), draw::rotate(&m, true), draw::rotate(&r, true)],
+        Edge::Right => [draw::rotate(&r, false), draw::rotate(&m, false), draw::rotate(&l, false)],
+    })
+}
+
+/// Renderiza a prateleira de vidro (sombra, gradiente, bordas) uma vez e corta em 3 partes:
 /// esquerda/meio/direita na horizontal, topo/meio/base na vertical.
-fn build_shelf(icon: f32, edge: Edge) -> [Pixmap; 3] {
+fn build_glass(icon: f32, edge: Edge) -> [Pixmap; 3] {
     let st = shelf_t(icon);
     let r = radius(icon);
     let cap = (r + SHELF_PAD + 2.0).ceil();
@@ -235,7 +270,7 @@ impl Dock {
             last_ext: None,
             shape: (0, 0, 0, 0),
             trash_full: trash_is_full(),
-            shelf: build_shelf(s.icon_size, s.edge),
+            shelf: build_shelf(s.icon_size, s.edge, ctx.theme_path().as_deref()),
             hide: Spring::new(if s.hide == HideMode::Always { 1.0 } else { 0.0 }, 260.0, 1.0),
             left_at: None,
             needs_frame: true,
@@ -342,7 +377,7 @@ impl Dock {
         }
         self.s = s;
         if s.icon_size != old.icon_size || s.edge != old.edge {
-            self.shelf = build_shelf(s.icon_size, s.edge);
+            self.shelf = build_shelf(s.icon_size, s.edge, ctx.theme_path().as_deref());
         }
         if !s.bounce {
             for it in &mut self.items {
@@ -360,6 +395,12 @@ impl Dock {
         }
         self.damage();
         Ok(())
+    }
+
+    /// Recarrega o tema da prateleira (ao trocar de tema).
+    pub fn reload_theme(&mut self, ctx: &Ctx) {
+        self.shelf = build_shelf(self.s.icon_size, self.s.edge, ctx.theme_path().as_deref());
+        self.damage();
     }
 
     /// Nomes de ícones que a dock exibe (carregados primeiro).
@@ -978,18 +1019,18 @@ impl Dock {
         if u1 - u0 > 2.0 * radius(icon) {
             let [a, mid, b] = &self.shelf;
             let (sx, sy) = ((shelf.0 - SHELF_PAD).round() as i32, (shelf.1 - SHELF_PAD).round() as i32);
+            let (aw, ah) = (a.width() as i32, a.height() as i32);
+            let (bw, bh) = (b.width() as i32, b.height() as i32);
             if self.s.edge == Edge::Bottom {
-                let cap = a.width() as i32;
-                let inner = ((shelf.2 - shelf.0).round() as i32 + 2 * SHELF_PAD as i32 - 2 * cap).max(0);
-                draw::copy(&mut self.pix, a, sx, sy, cap, 1);
-                draw::copy(&mut self.pix, mid, sx + cap, sy, inner, 1);
-                draw::copy(&mut self.pix, b, sx + cap + inner, sy, cap, 1);
+                let inner = ((shelf.2 - shelf.0).round() as i32 + 2 * SHELF_PAD as i32 - aw - bw).max(0);
+                draw::copy(&mut self.pix, a, sx, sy, aw, ah);
+                draw::copy(&mut self.pix, mid, sx + aw, sy, inner, mid.height() as i32);
+                draw::copy(&mut self.pix, b, sx + aw + inner, sy, bw, bh);
             } else {
-                let cap = a.height() as i32;
-                let inner = ((shelf.3 - shelf.1).round() as i32 + 2 * SHELF_PAD as i32 - 2 * cap).max(0);
-                draw::copy(&mut self.pix, a, sx, sy, 1, cap);
-                draw::copy(&mut self.pix, mid, sx, sy + cap, 1, inner);
-                draw::copy(&mut self.pix, b, sx, sy + cap + inner, 1, cap);
+                let inner = ((shelf.3 - shelf.1).round() as i32 + 2 * SHELF_PAD as i32 - ah - bh).max(0);
+                draw::copy(&mut self.pix, a, sx, sy, aw, ah);
+                draw::copy(&mut self.pix, mid, sx, sy + ah, mid.width() as i32, inner);
+                draw::copy(&mut self.pix, b, sx, sy + ah + inner, bw, bh);
             }
         }
 

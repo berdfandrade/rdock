@@ -36,6 +36,9 @@ pub enum Action {
     SetEdge(config::Edge),
     /// Novas preferências; `true` = gravar em disco (falso durante o arraste de um slider).
     ApplySettings(config::Settings, bool),
+    /// Índice em `ctx.themes`.
+    SetTheme(usize),
+    OpenThemeFolder,
 }
 
 pub enum Msg {
@@ -65,6 +68,9 @@ pub struct Ctx {
     active_win: Window,
     pub active_rect: Option<(i32, i32, i32, i32)>,
     pub settings: config::Settings,
+    /// Tema escolhido e os temas disponíveis (relidos ao abrir as Preferências).
+    pub theme: String,
+    pub themes: Vec<config::Theme>,
     pub own: Vec<Window>,
     /// Último timestamp X recebido (usado ao ativar janelas).
     pub time: u32,
@@ -72,6 +78,10 @@ pub struct Ctx {
 }
 
 impl Ctx {
+    pub fn theme_path(&self) -> Option<std::path::PathBuf> {
+        self.themes.iter().find(|t| t.name == self.theme).and_then(|t| t.path.clone())
+    }
+
     /// Relê a lista de janelas do gerenciador de janelas e as associa a apps.
     fn scan_clients(&mut self) {
         let conn = self.conn.clone();
@@ -218,6 +228,8 @@ fn main() -> R<()> {
         active_win: x11rb::NONE,
         active_rect: None,
         settings: config::load_settings(),
+        theme: config::load_theme_name(),
+        themes: config::list_themes(),
         own: Vec::new(),
         time: x11rb::CURRENT_TIME,
         buf: Vec::new(),
@@ -439,7 +451,21 @@ fn dispatch(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad,
             }
         }
         Action::OpenTrash => apps::open_uri("trash:///"),
+        Action::SetTheme(i) => {
+            if let Some(t) = ctx.themes.get(i) {
+                ctx.theme = t.name.clone();
+                config::save_theme_name(&ctx.theme);
+                dock.reload_theme(ctx);
+                sw.damage();
+            }
+        }
+        Action::OpenThemeFolder => {
+            let dir = config::user_theme_dir();
+            let _ = std::fs::create_dir_all(&dir);
+            apps::open_uri(&dir.to_string_lossy());
+        }
         Action::OpenSettings => {
+            ctx.themes = config::list_themes();
             lp.close(ctx);
             sw.open(ctx)?;
         }
