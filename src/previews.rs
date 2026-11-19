@@ -25,6 +25,9 @@ const HEAD: f32 = 46.0;
 const LABEL: f32 = 30.0;
 const M: f32 = 30.0;
 const ACCENT: (u8, u8, u8) = (10, 132, 255);
+const HEAD_FONT: f32 = 15.0;
+const BTN_FONT: f32 = 14.0;
+const NEW_LABEL: &str = "+  Nova janela";
 const REFRESH: Duration = Duration::from_millis(1000);
 const LEAVE_DELAY: Duration = Duration::from_millis(280);
 
@@ -53,6 +56,8 @@ pub struct Previews {
     anchor: Anchor,
     rect: (f32, f32, f32, f32),
     cw: f32,
+    /// Margem esquerda dos cartões (centralizados quando o cabeçalho é mais largo).
+    cards_x: f32,
     wins: Vec<Win>,
     t: Spring,
     hover: Option<Hit>,
@@ -81,6 +86,7 @@ impl Previews {
             anchor: Anchor { icon: (0.0, 0.0), edge_pt: (0.0, 0.0), edge: Edge::Bottom },
             rect: (0.0, 0.0, 10.0, 10.0),
             cw: CW,
+            cards_x: PAD,
             wins: Vec::new(),
             t: Spring::new(0.0, 340.0, 0.85),
             hover: None,
@@ -113,7 +119,12 @@ impl Previews {
         // Muitas janelas: os cartões encolhem para caber na tela.
         self.cw = CW.min((mw - 2.0 * M - 2.0 * PAD - (n - 1.0) * GAP) / n).max(120.0);
         let ch = self.cw * CH / CW;
-        let (pw, ph) = (2.0 * PAD + n * self.cw + (n - 1.0) * GAP, HEAD + ch + LABEL + PAD);
+        // O cabeçalho (nome · janelas + botão) também precisa caber: com uma janela só, ele é o mais largo.
+        let cards = n * self.cw + (n - 1.0) * GAP;
+        let head_w = ctx.text.width(&self.head(ctx), HEAD_FONT) + 20.0 + ctx.text.width(NEW_LABEL, BTN_FONT) + 24.0;
+        let pw = (2.0 * PAD + cards.max(head_w)).min(mw - 2.0 * M);
+        self.cards_x = (pw - cards) / 2.0;
+        let ph = HEAD + ch + LABEL + PAD;
         let (px, py) = match anchor.edge {
             Edge::Bottom => (anchor.icon.0 - pw / 2.0, anchor.edge_pt.1 - 12.0 - ph),
             Edge::Left => (anchor.edge_pt.0 + 12.0, anchor.icon.1 - ph / 2.0),
@@ -196,12 +207,18 @@ impl Previews {
         }
     }
 
+    fn head(&self, ctx: &Ctx) -> String {
+        let n = ctx.running.get(&self.app).map_or(0, |w| w.len());
+        let name = ctx.apps.get(self.app).map(|a| a.name.clone()).unwrap_or_default();
+        format!("{name} · {n} {}", if n == 1 { "janela" } else { "janelas" })
+    }
+
     fn card_rect(&self, k: usize) -> (f32, f32, f32, f32) {
-        (M + PAD + k as f32 * (self.cw + GAP), M + HEAD, self.cw, self.cw * CH / CW)
+        (M + self.cards_x + k as f32 * (self.cw + GAP), M + HEAD, self.cw, self.cw * CH / CW)
     }
 
     fn new_btn(&self, ctx: &Ctx) -> (f32, f32, f32, f32) {
-        let w = ctx.text.width("+  Nova janela", 12.5) + 24.0;
+        let w = ctx.text.width(NEW_LABEL, BTN_FONT) + 24.0;
         (self.rect.2 - M - PAD - w, M + 9.0, w, 30.0)
     }
 
@@ -321,14 +338,15 @@ impl Previews {
         }
         let id = Transform::identity();
         let n = self.wins.len();
-        let name = ctx.apps.get(self.app).map(|a| a.name.clone()).unwrap_or_default();
-        let head = format!("{name} · {n} {}", if n == 1 { "janela" } else { "janelas" });
-        let tp = ctx.text.get(&head, 13.5, 0xffffff);
+        // Nunca invade o botão "Nova janela".
+        let room = self.new_btn(ctx).0 - (M + PAD) - 12.0;
+        let head = ctx.text.ellipsize(&self.head(ctx), HEAD_FONT, room);
+        let tp = ctx.text.get(&head, HEAD_FONT, 0xffffff);
         draw::blit_fast(&mut self.pix, tp, (M + PAD) as i32, (M + 24.0 - tp.height() as f32 / 2.0) as i32, ca);
         let r = self.new_btn(ctx);
         let hv = self.hover == Some(Hit::NewWindow);
         draw::fill(&mut self.pix, &draw::rrect(r.0, r.1, r.2, r.3, 9.0), &draw::color(255, 255, 255, if hv { 0.22 } else { 0.12 } * ca), id);
-        let tp = ctx.text.get("+  Nova janela", 12.5, 0xffffff);
+        let tp = ctx.text.get(NEW_LABEL, BTN_FONT, 0xffffff);
         draw::blit_fast(&mut self.pix, tp, (r.0 + 12.0) as i32, (r.1 + (r.3 - tp.height() as f32) / 2.0) as i32, ca);
         let icon = ctx.apps.get(self.app).map(|a| a.icon.clone()).unwrap_or_default();
         for k in 0..n {
@@ -349,21 +367,21 @@ impl Previews {
             draw::stroke(&mut self.pix, &draw::rrect(x + 0.5, y + 0.5, cw - 1.0, ch - 1.0, 9.0), &ring, if hovered { 2.0 } else { 1.0 }, id);
             if let Some(d) = self.wins[k].desktop {
                 let lbl = format!("Área {}", d + 1);
-                let tp = ctx.text.get(&lbl, 10.5, 0xffffff);
+                let tp = ctx.text.get(&lbl, 12.0, 0xffffff);
                 let (bw, bh) = (tp.width() as f32 + 12.0, tp.height() as f32 + 2.0);
                 let (bx, by) = (x + cw - bw - 6.0, y + ch - bh - 6.0);
                 draw::fill(&mut self.pix, &draw::rrect(bx, by, bw, bh, 6.0), &draw::color(0, 0, 0, 0.6 * ca), id);
-                let tp = ctx.text.get(&lbl, 10.5, 0xffffff);
+                let tp = ctx.text.get(&lbl, 12.0, 0xffffff);
                 draw::blit_fast(&mut self.pix, tp, (bx + 6.0) as i32, (by + 1.0) as i32, ca);
             }
             if hovered {
                 let close_hv = self.hover == Some(Hit::Close(k));
                 draw::circle(&mut self.pix, x + 14.0, y + 14.0, 10.0, &draw::color(if close_hv { 230 } else { 70 }, if close_hv { 60 } else { 70 }, if close_hv { 50 } else { 76 }, 0.95 * ca));
-                let tp = ctx.text.get("×", 13.0, 0xffffff);
+                let tp = ctx.text.get("×", 14.5, 0xffffff);
                 draw::blit_fast(&mut self.pix, tp, (x + 14.0 - tp.width() as f32 / 2.0) as i32, (y + 14.0 - tp.height() as f32 / 2.0) as i32, ca);
             }
-            let title = ctx.text.ellipsize(&self.wins[k].title, 12.0, cw - 8.0);
-            let tp = ctx.text.get(&title, 12.0, 0xffffff);
+            let title = ctx.text.ellipsize(&self.wins[k].title, 13.5, cw - 8.0);
+            let tp = ctx.text.get(&title, 13.5, 0xffffff);
             draw::blit_fast(&mut self.pix, tp, (x + (cw - tp.width() as f32) / 2.0) as i32, (y + ch + 7.0) as i32, if hovered { ca } else { 0.75 * ca });
         }
         self.out.put(&ctx.conn, self.win, &self.pix, (0, 0, w as i32, h as i32))

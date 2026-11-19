@@ -533,7 +533,7 @@ impl StackView {
 
     fn tab_rect(&self, k: usize) -> (f32, f32, f32, f32) {
         let (ox, oy) = self.panel_origin();
-        (ox + 16.0 + k as f32 * 80.0, oy + 66.0, 78.0, 32.0)
+        (ox + 16.0 + k as f32 * 96.0, oy + 66.0, 92.0, 32.0)
     }
 
     fn back_rect(&self) -> (f32, f32, f32, f32) {
@@ -543,7 +543,7 @@ impl StackView {
 
     fn open_btn_rect(&self, ctx: &Ctx) -> (f32, f32, f32, f32) {
         let (ox, oy) = self.panel_origin();
-        let w = ctx.text.width("Abrir em Arquivos", 13.0) + 28.0;
+        let w = ctx.text.width("Abrir em Arquivos", 14.5) + 28.0;
         (ox + PW - 16.0 - w, oy + PH - FOOT + 9.0, w, 34.0)
     }
 
@@ -555,8 +555,8 @@ impl StackView {
     fn header_btns(&self, ctx: &Ctx) -> [(f32, f32, f32, f32); 2] {
         let (hx, hy, hw, hh) = orbit_header(self.anchor, 380.0);
         let (hx, hy) = self.to_local((hx, hy));
-        let w2 = ctx.text.width("Abrir em Arquivos", 13.0) + 26.0;
-        let w1 = ctx.text.width("Painel", 13.0) + 26.0;
+        let w2 = ctx.text.width("Abrir em Arquivos", 14.5) + 26.0;
+        let w1 = ctx.text.width("Painel", 14.5) + 26.0;
         let r2 = (hx + hw - 6.0 - w2, hy + 6.0, w2, hh - 12.0);
         [(r2.0 - 6.0 - w1, hy + 6.0, w1, hh - 12.0), r2]
     }
@@ -816,17 +816,17 @@ impl StackView {
                 draw::circle(&mut self.pix, cx + size / 2.0 - 3.0, cy - size / 2.0 + 3.0, 4.5, &draw::color(ACCENT.0, ACCENT.1, ACCENT.2, pa));
             }
             // Rótulo: encurtado; completo numa pílula azul quando em foco.
-            let label = if focused { e.name.clone() } else { ctx.text.ellipsize(&e.name, 11.5, 104.0) };
-            let tp = ctx.text.get(&label, 11.5, 0xffffff);
+            let label = if focused { e.name.clone() } else { ctx.text.ellipsize(&e.name, 13.0, 104.0) };
+            let tp = ctx.text.get(&label, 13.0, 0xffffff);
             let (lw, lh) = (tp.width() as f32, tp.height() as f32);
             let (lx, ly) = ((cx - lw / 2.0).round(), (cy + size / 2.0 + 6.0).round());
             if focused {
                 draw::fill(&mut self.pix, &draw::rrect(lx - 7.0, ly - 1.0, lw + 14.0, lh + 2.0, 6.0), &draw::color(ACCENT.0, ACCENT.1, ACCENT.2, pa), id);
             } else {
-                let sh = ctx.text.get(&label, 11.5, 0x000000);
+                let sh = ctx.text.get(&label, 13.0, 0x000000);
                 draw::blit_fast(&mut self.pix, sh, lx as i32, ly as i32 + 1, 0.7 * pa);
             }
-            let tp = ctx.text.get(&label, 11.5, 0xffffff);
+            let tp = ctx.text.get(&label, 13.0, 0xffffff);
             draw::blit_fast(&mut self.pix, tp, lx as i32, ly as i32, pa);
         }
         // Cabeçalho: nome · quantidade, botões Painel e Abrir em Arquivos.
@@ -835,7 +835,7 @@ impl StackView {
         draw::glass(&mut self.pix, None, (0.0, 0.0), hx, hy, hw, hh, 18.0, 0.0, t, Transform::identity());
         let name = ctx.stacks.get(self.stack).map(|s| s.name()).unwrap_or_default();
         let title = format!("{name} · {}", items_label(list_len(&self.dir)));
-        let tp = ctx.text.get(&title, 13.0, 0xffffff);
+        let tp = ctx.text.get(&title, 14.5, 0xffffff);
         let tw = tp.width() as i32;
         draw::blit_fast(&mut self.pix, tp, (hx + 14.0) as i32, (hy + (hh - tp.height() as f32) / 2.0) as i32, t);
         let _ = tw;
@@ -847,7 +847,7 @@ impl StackView {
     fn button(&mut self, ctx: &mut Ctx, r: (f32, f32, f32, f32), label: &str, primary: bool, hover: bool, a: f32) {
         let c = if primary { draw::color(ACCENT.0, ACCENT.1, ACCENT.2, a * if hover { 1.0 } else { 0.92 }) } else { draw::color(255, 255, 255, a * if hover { 0.22 } else { 0.13 }) };
         draw::fill(&mut self.pix, &draw::rrect(r.0, r.1, r.2, r.3, 9.0), &c, Transform::identity());
-        let tp = ctx.text.get(label, 13.0, 0xffffff);
+        let tp = ctx.text.get(label, 14.5, 0xffffff);
         let (x, y) = (r.0 + (r.2 - tp.width() as f32) / 2.0, r.1 + (r.3 - tp.height() as f32) / 2.0);
         draw::blit_fast(&mut self.pix, tp, x.round() as i32, y.round() as i32, a);
     }
@@ -876,10 +876,10 @@ impl StackView {
         let chev = ctx.text.get("‹", 20.0, 0xffffff);
         draw::blit_fast(&mut self.pix, chev, (br.0 + (br.2 - chev.width() as f32) / 2.0) as i32, (br.1 + (br.3 - chev.height() as f32) / 2.0 - 1.0) as i32, ca * if can_back { 0.9 } else { 0.3 });
         let title = self.dir.file_name().map_or_else(|| files::tilde(&self.dir), |n| n.to_string_lossy().to_string());
-        let tp = ctx.text.get(&title, 14.5, 0xffffff);
+        let tp = ctx.text.get(&title, 16.0, 0xffffff);
         let tw = (tp.width() as f32).min(PW - 330.0);
         draw::fill(&mut self.pix, &draw::rrect(br.0 + br.2 + 8.0, br.1, tw + 22.0, br.3, 9.0), &draw::color(255, 255, 255, 0.1 * ca), id);
-        let tp = ctx.text.get(&title, 14.5, 0xffffff);
+        let tp = ctx.text.get(&title, 16.0, 0xffffff);
         draw::blit_fast(&mut self.pix, tp, (br.0 + br.2 + 19.0) as i32, (br.1 + (br.3 - tp.height() as f32) / 2.0) as i32, ca);
         // Busca
         let (sx, sy, sw, sh) = self.search_rect();
@@ -891,7 +891,7 @@ impl StackView {
         pb.line_to(sx + 23.5, sy + sh / 2.0 + 5.5);
         draw::stroke(&mut self.pix, &pb.finish(), &draw::color(255, 255, 255, 0.7 * ca), 1.7, id);
         let (q, qa) = if self.query.is_empty() { ("Buscar".to_string(), 0.5) } else { (self.query.clone(), 1.0) };
-        let tp = ctx.text.get(&q, 13.0, 0xffffff);
+        let tp = ctx.text.get(&q, 14.5, 0xffffff);
         draw::blit_fast(&mut self.pix, tp, (sx + 30.0) as i32, (sy + (sh - tp.height() as f32) / 2.0) as i32, qa * ca);
         // Ordenação e contagem
         let sort = self.sort(ctx);
@@ -902,11 +902,11 @@ impl StackView {
             if on || hv {
                 draw::fill(&mut self.pix, &draw::rrect(r.0, r.1, r.2, r.3, 8.0), &draw::color(255, 255, 255, if on { 0.18 } else { 0.08 } * ca), id);
             }
-            let tp = ctx.text.get(l, 12.5, 0xffffff);
+            let tp = ctx.text.get(l, 14.0, 0xffffff);
             draw::blit_fast(&mut self.pix, tp, (r.0 + (r.2 - tp.width() as f32) / 2.0) as i32, (r.1 + (r.3 - tp.height() as f32) / 2.0) as i32, ca * if on { 1.0 } else { 0.75 });
         }
         let count = items_label(self.shown.len());
-        let tp = ctx.text.get(&count, 12.0, 0xffffff);
+        let tp = ctx.text.get(&count, 13.5, 0xffffff);
         draw::blit_fast(&mut self.pix, tp, (ox + PW - 16.0 - tp.width() as f32) as i32, (oy + 82.0 - tp.height() as f32 / 2.0) as i32, 0.6 * ca);
         for (x, y, w, h) in [(ox, oy + TOP - 6.0, PW, 1.0), (ox + GRID_W, oy + TOP - 6.0, 1.0, PH - TOP - FOOT + 6.0), (ox, oy + PH - FOOT, PW, 1.0)] {
             if let Some(r) = tiny_skia::Rect::from_xywh(x, y, w, h) {
@@ -936,9 +936,9 @@ impl StackView {
             let isz = if e.icon.starts_with("thumb:") { 60.0 } else { 52.0 };
             let clip = (clip0 as i32, clip1 as i32);
             draw::icon_clip(&mut self.pix, &mut ctx.scaled, &ctx.icons, &e.icon, x + w / 2.0, y + 10.0 + (52.0 - isz) / 2.0, isz, fade, 0.0, clip);
-            let lines = wrap2(&ctx.text, &e.name, 11.5, w - 10.0);
+            let lines = wrap2(&ctx.text, &e.name, 13.0, w - 10.0);
             for (n, l) in lines.iter().enumerate() {
-                let tp = ctx.text.get(l, 11.5, 0xffffff);
+                let tp = ctx.text.get(l, 13.0, 0xffffff);
                 let lx = x + (w - tp.width() as f32) / 2.0;
                 let ly = y + 66.0 + n as f32 * (tp.height() as f32 - 2.0);
                 draw::blit_fast_clip(&mut self.pix, tp, lx.round() as i32, ly.round() as i32, fade, clip);
@@ -946,13 +946,13 @@ impl StackView {
         }
         if self.shown.is_empty() {
             let msg = if self.query.is_empty() { "Pasta vazia" } else { "Nenhum resultado" };
-            let tp = ctx.text.get(msg, 14.0, 0xffffff);
+            let tp = ctx.text.get(msg, 15.5, 0xffffff);
             draw::blit_fast(&mut self.pix, tp, (ox + (GRID_W - tp.width() as f32) / 2.0) as i32, (oy + TOP + 100.0) as i32, 0.55 * ca);
         }
         self.draw_preview(ctx, sel_entry, ca);
         // Rodapé
         let hint = "Setas navegam · Enter abre · Espaço: prévia · Backspace volta";
-        let tp = ctx.text.get(hint, 11.5, 0xffffff);
+        let tp = ctx.text.get(hint, 13.0, 0xffffff);
         draw::blit_fast(&mut self.pix, tp, (ox + 16.0) as i32, (oy + PH - FOOT / 2.0 - tp.height() as f32 / 2.0) as i32, 0.55 * ca);
         let r = self.open_btn_rect(ctx);
         self.button(ctx, r, "Abrir em Arquivos", false, self.hover == Some(Hit::OpenFolder), ca);
@@ -978,7 +978,7 @@ impl StackView {
                 let size = if e.icon.starts_with("thumb:") { (bh - 70.0).min(bw - 40.0) } else { 160.0 };
                 draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, &e.icon, bx + bw / 2.0, by + 16.0 + (bh - 70.0 - size) / 2.0, size, a, 0.0);
                 let name = e.name.clone();
-                center(&mut ctx.text, &mut self.pix, &name, 14.0, by + bh - 44.0, a, bx, bw);
+                center(&mut ctx.text, &mut self.pix, &name, 15.5, by + bh - 44.0, a, bx, bw);
                 return;
             }
         }
@@ -989,16 +989,16 @@ impl StackView {
             }
             None => {
                 let name = self.dir.file_name().map_or_else(|| files::tilde(&self.dir), |n| n.to_string_lossy().to_string());
-                ("folder".to_string(), name, vec!["Selecione um arquivo para ver a".into(), "prévia. Espaço abre em tamanho".into(), "grande.".into()])
+                ("folder".to_string(), name, vec!["Selecione um arquivo".into(), "para ver a prévia.".into(), "Espaço amplia.".into()])
             }
         };
         let size = if icon.starts_with("thumb:") { 180.0 } else { 88.0 };
         let top = py + (ph - size - 40.0 - lines.len() as f32 * 18.0) / 2.0;
         draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, &icon, px + pw / 2.0, top, size, a, 0.0);
         let mut y = top + size + 14.0;
-        y += center(&mut ctx.text, &mut self.pix, &name, 14.5, y, a, px, pw) + 4.0;
+        y += center(&mut ctx.text, &mut self.pix, &name, 16.0, y, a, px, pw) + 4.0;
         for l in lines {
-            y += center(&mut ctx.text, &mut self.pix, &l, 11.5, y, 0.6 * a, px, pw) - 2.0;
+            y += center(&mut ctx.text, &mut self.pix, &l, 13.0, y, 0.6 * a, px, pw);
         }
     }
 
