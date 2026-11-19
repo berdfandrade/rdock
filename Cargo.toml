@@ -12,6 +12,8 @@ tiny-skia = "0.11"
 resvg = "0.45"
 ab_glyph = "0.2"
 memmap2 = "0.9"
+zune-jpeg = "0.4"
+rustix = { version = "1", features = ["fs"] }
 
 [profile.dev]
 opt-level = 2

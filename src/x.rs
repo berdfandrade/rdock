@@ -316,3 +316,9 @@ pub fn keysym_char(ks: u32) -> Option<char> {
         None
     }
 }
+
+/// Propriedade de texto (ex.: _NET_WM_NAME em UTF-8, WM_NAME em Latin-1).
+pub fn text_prop(conn: &RustConnection, win: Window, prop: Atom, ty: Atom) -> Option<String> {
+    let r = conn.get_property(false, win, prop, ty, 0, 1024).ok()?.reply().ok()?;
+    (!r.value.is_empty()).then(|| String::from_utf8_lossy(&r.value).to_string())
+}

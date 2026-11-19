@@ -326,8 +326,10 @@ dependencies = [
  "ab_glyph",
  "memmap2",
  "resvg",
+ "rustix",
  "tiny-skia",
  "x11rb",
+ "zune-jpeg",
 ]
 
 [[package]]

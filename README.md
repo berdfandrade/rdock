@@ -15,6 +15,10 @@ rdock draws everything itself on the CPU with [tiny-skia](https://github.com/Raz
 - **Context menus.** Right-click an app for *Open/Show*, *Keep in Dock / Remove from Dock* and *Quit*. Right-click the dock itself for quick toggles and the preferences.
 - **Drag & drop.** Drag icons to reorder them while their neighbours slide out of the way. Drag an icon out of the dock to remove it with a "poof". Drag a running app into the pinned area to pin it.
 - **Add apps by dragging.** Drag an app out of the Launchpad, or drop a `.desktop` file from your file manager or desktop (XDND), onto the dock to keep it there. It lands where you drop it.
+- **Stacks.** Drop a folder on the dock to keep it there. Up to 9 items open as an *orbit*: two arcs around the icon, newest four inside. Larger folders open a *panel* with subfolders, search, sorting (recent, name, kind), a preview pane and full keyboard control (arrows, Enter, Space for a big preview, Backspace to go up, type to filter). A red badge counts files that arrived since you last looked. Folders are watched with inotify, so idle cost stays at 0%. Your Downloads folder is added on first run.
+- **Window previews.** Rest the pointer on an open app for 400 ms to see live thumbnails of its windows, with the workspace of each. Click to focus, × to close, the wheel to cycle. Apps with two or more windows show two dots.
+- **Drop files on apps.** While you drag a file, the apps that can open it rise and the others fade. Drop on an app to open the file with it, on a stack to move it there (hold Ctrl to copy), or on the Trash to delete it.
+- **Recent files in the app menu.** Right-click an app to reopen what it opened last (read from `recently-used.xbel`).
 - **Launchpad.** A full-screen grid of every installed app over a blurred copy of the desktop, with a zoom-in animation, sliding pages (mouse wheel, arrow keys or drag) and accent-insensitive search as you type.
 - **Trash.** The trash icon shows when the trash has items, and clicking it opens the trash.
 - **Three positions:** bottom, left or right of the screen.
@@ -109,6 +113,7 @@ mkdir -p ~/.local/share/rdock/themes && cp themes/*.png ~/.local/share/rdock/the
 | `~/.config/rdock/settings` | Size, magnification, position, hiding, bounce, indicators, text size |
 | `~/.config/rdock/pinned` | Pinned apps, one `.desktop` ID per line |
 | `~/.config/rdock/theme` | Name of the selected theme |
+| `~/.config/rdock/stacks` | Stacks, one per line: `path;style;sort;last-opened` |
 | `~/.config/rdock/themes/` | Your theme PNGs |
 | `~/.local/share/applications/rdock.desktop` | Menu entry, written by rdock on startup |
 
@@ -121,6 +126,9 @@ On the first run, the pinned list starts with your file manager, browser and ter
 | `main.rs` | Event loop, shared state, window → app matching, active-window tracking |
 | `dock.rs` | Layout in edge-independent (u, v) coordinates, magnification, bounce, drag & drop, hiding, rendering |
 | `launchpad.rs` | App grid, search, paging, screen capture and blur |
+| `stack.rs` | Stacks: folder listing, inotify watcher, orbit and panel popovers |
+| `previews.rs` | Window preview popover (thumbnails captured on a background thread) |
+| `files.rs` | MIME types (shared-mime-info), recent files, `gio` file operations |
 | `settings.rs` | Preferences window (sliders, switches, segmented controls) |
 | `apps.rs` | `.desktop` parsing, search normalisation, launching via `gio launch` |
 | `icons.rs` | XDG icon theme lookup and SVG/PNG rasterisation (background threads) |

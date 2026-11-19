@@ -12,7 +12,7 @@ use crate::draw;
 use crate::{x, Action, Ctx, R};
 
 const W: f32 = 640.0;
-const H: f32 = 540.0;
+const H: f32 = 680.0;
 const LABEL_X: f32 = 28.0;
 const CTRL_X: f32 = 270.0;
 const CTRL_END: f32 = W - 28.0;
@@ -26,7 +26,8 @@ const ROW_THEME: f32 = 316.0;
 const THEME_BTN: f32 = 34.0;
 const DIVIDER: f32 = 366.0;
 const ROW_HIDE: f32 = 408.0;
-const ROW_TOGGLES: [f32; 2] = [454.0, 500.0];
+const ROW_TOGGLES: [f32; 5] = [454.0, 500.0, 546.0, 592.0, 638.0];
+const N_SWITCH: usize = 6;
 const SWITCH_W: f32 = 40.0;
 const SWITCH_H: f32 = 24.0;
 const MAG_SLIDER_X: f32 = CTRL_X + SWITCH_W + 18.0;
@@ -43,17 +44,16 @@ pub struct SettingsWin {
     out: x::Surface,
     pix: Pixmap,
     pub visible: bool,
-    /// Ampliação, ocultar, bounce, indicadores.
-    /// Ampliação, bounce, indicadores.
-    switches: [Spring; 3],
+    /// Ampliação, bounce, indicadores, prévias, destaque ao arrastar, recentes.
+    switches: [Spring; N_SWITCH],
     segment: Spring,
     hide_segment: Spring,
     active: Option<Slider>,
     pub needs_frame: bool,
 }
 
-fn switch_values(s: &Settings) -> [bool; 3] {
-    [s.magnification, s.bounce, s.indicators]
+fn switch_values(s: &Settings) -> [bool; N_SWITCH] {
+    [s.magnification, s.bounce, s.indicators, s.previews, s.drag_highlight, s.recents]
 }
 
 fn hide_index(h: HideMode) -> f32 {
@@ -193,7 +193,7 @@ impl SettingsWin {
                 return Some(Action::ApplySettings(Self::with_slider(s, which, x), false));
             }
         }
-        for i in 0..3 {
+        for i in 0..N_SWITCH {
             let (rx, ry, rw, rh) = switch_rect(i);
             // Nas linhas de baixo, clicar no texto também alterna (como num checkbox).
             let hit = if i == 0 { in_rect(x, y, (rx - 4.0, ry - 4.0, rw + 8.0, rh + 8.0)) } else { (y - (ry + rh / 2.0)).abs() <= 18.0 };
@@ -201,7 +201,10 @@ impl SettingsWin {
                 match i {
                     0 => s.magnification = !s.magnification,
                     1 => s.bounce = !s.bounce,
-                    _ => s.indicators = !s.indicators,
+                    2 => s.indicators = !s.indicators,
+                    3 => s.previews = !s.previews,
+                    4 => s.drag_highlight = !s.drag_highlight,
+                    _ => s.recents = !s.recents,
                 }
                 return Some(Action::ApplySettings(s, true));
             }
@@ -385,7 +388,13 @@ impl SettingsWin {
         self.label(ctx, "Ocultar a Dock", LABEL_X, ROW_HIDE, 16.0, 0.92);
         self.segmented(ctx, ROW_HIDE, ["Nunca", "Sempre", "Inteligente"], self.hide_segment.value);
 
-        let toggles = ["Animar a abertura de aplicativos", "Mostrar indicadores de aplicativos abertos"];
+        let toggles = [
+            "Animar a abertura de aplicativos",
+            "Mostrar indicadores de aplicativos abertos",
+            "Prévia de janelas ao passar o mouse",
+            "Destacar apps compatíveis ao arrastar",
+            "Arquivos recentes no menu do app",
+        ];
         for (i, l) in toggles.iter().enumerate() {
             self.label(ctx, l, LABEL_X, ROW_TOGGLES[i], 16.0, 0.92);
             self.switch(i + 1);

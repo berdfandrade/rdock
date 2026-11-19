@@ -19,6 +19,8 @@ pub struct App {
     pub path: PathBuf,
     /// Aparece no Launchpad.
     pub listed: bool,
+    /// Tipos MIME que o app abre (campo MimeType).
+    pub mime: Vec<String>,
 }
 
 impl App {
@@ -37,6 +39,7 @@ impl App {
             wm_class: class.to_lowercase(),
             path: PathBuf::new(),
             listed: false,
+            mime: Vec::new(),
         }
     }
 
@@ -211,6 +214,7 @@ fn parse(path: &Path, id: String, locales: &[String], desktops: &[String]) -> Op
     let name = localized("Name")?;
     let generic = localized("GenericName").unwrap_or_default();
     let keywords = localized("Keywords").unwrap_or_default();
+    let mime = get("MimeType").map(|m| m.split(';').filter(|s| !s.is_empty()).map(String::from).collect()).unwrap_or_default();
     let stem = id.trim_end_matches(".desktop").to_string();
     let icon = get("Icon").filter(|s| !s.is_empty()).unwrap_or_else(|| "application-x-executable".into());
     Some(App {
@@ -220,6 +224,7 @@ fn parse(path: &Path, id: String, locales: &[String], desktops: &[String]) -> Op
         wm_class: get("StartupWMClass").unwrap_or_default().to_lowercase(),
         exec,
         path: path.to_path_buf(),
+        mime,
         // A entrada da própria rdock fica no menu do sistema, mas não no Launchpad.
         listed: id != LAUNCHER_ID,
         id,

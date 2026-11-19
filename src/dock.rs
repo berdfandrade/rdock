@@ -18,7 +18,8 @@ use x11rb::wrapper::ConnectionExt as _;
 use crate::anim::{ease_out_cubic, Spring};
 use crate::config::{self, Edge, HideMode, Settings};
 use crate::draw;
-use crate::menu::Menu;
+use crate::menu::{Entry, Menu};
+use crate::stack::{Sort, Style};
 use crate::{x, Action, Ctx, R};
 
 const GAP: f32 = 8.0;
@@ -27,7 +28,7 @@ const PAD_TOP: f32 = 7.0;
 const PAD_BOTTOM: f32 = 9.0;
 const MARGIN: f32 = 6.0;
 /// Espessura da janela: cabe o maior ícone ampliado, o bounce, a tooltip e o menu.
-const THICK_BOTTOM: i32 = 400;
+const THICK_BOTTOM: i32 = 640;
 const THICK_SIDE: i32 = 540;
 const SEP_W: f32 = 17.0;
 /// Margem ao redor da prateleira no cache 9-slice (espaço para a sombra).
@@ -47,6 +48,8 @@ enum Kind {
     App { app: usize, pinned: bool },
     /// 0 = entre fixados e apps em execução; 1 = antes da Lixeira.
     Sep(u8),
+    /// Gaveta: índice em `ctx.stacks`.
+    Stack(usize),
     Trash,
 }
 
@@ -59,6 +62,9 @@ struct Item {
     flip_u: Spring,
     flip_v: Spring,
     press: Spring,
+    /// Destaque ao arrastar um arquivo: sobe (apps compatíveis) ou esmaece (os outros).
+    lift: Spring,
+    dim: Spring,
     bounce: Option<Bounce>,
     launch_until: Option<Instant>,
     removing: bool,
@@ -87,11 +93,20 @@ struct Drag {
     external: Option<bool>,
 }
 
-/// Arraste XDND (ex.: um .desktop do gerenciador de arquivos) passando sobre a dock.
+/// Arraste XDND (arquivos do gerenciador de arquivos) passando sobre a dock.
 struct Dnd {
     source: Window,
     accept: bool,
     u: f32,
+    /// Arquivos arrastados (pedidos já no XdndEnter, para saber o tipo).
+    paths: Vec<std::path::PathBuf>,
+    have_data: bool,
+    /// Soltou antes de os dados chegarem.
+    dropped: bool,
+    /// Apps que abrem o tipo do arquivo.
+    compat: std::collections::HashSet<usize>,
+    /// Item sob o arquivo.
+    target: Option<usize>,
 }
 
 struct Poof {
@@ -110,6 +125,16 @@ struct Tooltip {
 }
 
 type Box4 = (f32, f32, f32, f32);
+
+#[derive(Clone, Copy, PartialEq)]
+enum DropKind {
+    Pending,
+    OpenWith(usize),
+    ToStack(usize),
+    Trash,
+    /// .desktop vira app fixado; pasta vira gaveta.
+    Add,
+}
 
 fn union(a: Box4, b: Box4) -> Box4 {
     (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))
@@ -147,11 +172,18 @@ pub struct Dock {
     hide: Spring,
     left_at: Option<Instant>,
     dnd: Option<Dnd>,
+    /// Pasta solta na dock, à espera de virar gaveta (o laço principal cria).
+    pub pending_stack: Option<std::path::PathBuf>,
+    /// A prévia de janelas está aberta (esconde a tooltip).
+    pub preview_open: bool,
+    /// App com o mouse parado em cima, e desde quando (prévia de janelas).
+    hover_since: Option<(usize, Instant)>,
     pub needs_frame: bool,
 }
 
-fn icon_key(apps: &[crate::apps::App], kind: Kind, trash_full: bool) -> &str {
+fn icon_key<'a>(apps: &'a [crate::apps::App], stacks: &'a [crate::stack::Stack], kind: Kind, trash_full: bool) -> &'a str {
     match kind {
+        Kind::Stack(i) => stacks.get(i).map_or("folder", |s| s.icon.as_str()),
         Kind::Launchpad => "@launchpad",
         Kind::Trash if trash_full => "user-trash-full",
         Kind::Trash => "user-trash",
@@ -165,6 +197,12 @@ fn label(ctx: &Ctx, kind: Kind) -> String {
         Kind::Launchpad => "Launchpad".into(),
         Kind::Trash => "Lixeira".into(),
         Kind::App { app, .. } => ctx.apps[app].name.clone(),
+        Kind::Stack(i) => match ctx.stacks.get(i) {
+            Some(s) if s.fresh == 1 => format!("{} · 1 novo", s.name()),
+            Some(s) if s.fresh > 1 => format!("{} · {} novos", s.name(), s.fresh),
+            Some(s) => s.name(),
+            None => String::new(),
+        },
         Kind::Sep(_) => String::new(),
     }
 }
@@ -285,6 +323,9 @@ impl Dock {
             hide: Spring::new(if s.hide == HideMode::Always { 1.0 } else { 0.0 }, 260.0, 1.0),
             left_at: None,
             dnd: None,
+            pending_stack: None,
+            preview_open: false,
+            hover_since: None,
             needs_frame: true,
         };
         dock.create_window(ctx)?;
@@ -299,6 +340,9 @@ impl Dock {
         }
         items.push(dock.item(Kind::Sep(0), 0.0));
         items.push(dock.item(Kind::Sep(1), 1.0));
+        for i in 0..ctx.stacks.len() {
+            items.push(dock.item(Kind::Stack(i), 1.0));
+        }
         items.push(dock.item(Kind::Trash, 1.0));
         dock.items = items;
         dock.save(ctx);
@@ -425,7 +469,7 @@ impl Dock {
 
     /// Nomes de ícones que a dock exibe (carregados primeiro).
     pub fn icon_names(&self, ctx: &Ctx) -> Vec<String> {
-        let mut v: Vec<String> = self.items.iter().map(|i| icon_key(&ctx.apps, i.kind, false).to_string()).collect();
+        let mut v: Vec<String> = self.items.iter().map(|i| icon_key(&ctx.apps, &ctx.stacks, i.kind, false).to_string()).collect();
         v.push("user-trash-full".into());
         v.retain(|s| !s.is_empty());
         v
@@ -444,6 +488,8 @@ impl Dock {
             flip_u: Spring::new(0.0, 320.0, 0.85),
             flip_v: Spring::new(0.0, 320.0, 0.85),
             press: Spring::new(0.0, 900.0, 1.0),
+            lift: Spring::new(0.0, 300.0, 0.8),
+            dim: Spring::new(0.0, 300.0, 1.0),
             bounce: None,
             launch_until: None,
             removing: false,
@@ -668,6 +714,14 @@ impl Dock {
         self.needs_frame = true;
     }
 
+    /// "Nova janela": o ícone pula uma vez, mesmo com o app já aberto.
+    pub fn launch_feedback(&mut self, app: usize) {
+        if let (Some(i), true) = (self.find_app(app), self.s.bounce) {
+            self.items[i].bounce = Some(Bounce { t: 0.0, stop: true });
+            self.needs_frame = true;
+        }
+    }
+
     pub fn toggle_pin(&mut self, ctx: &mut Ctx, app: usize) {
         if !ctx.apps[app].launchable() {
             return;
@@ -721,6 +775,13 @@ impl Dock {
         }
     }
 
+    /// Outro popover capturou o ponteiro: a dock volta ao estado sem mouse.
+    pub fn release_mouse(&mut self) {
+        self.mouse = None;
+        self.hover_since = None;
+        self.needs_frame = true;
+    }
+
     pub fn on_leave(&mut self) {
         if self.press.is_none() && self.drag.is_none() && self.menu.is_none() {
             self.mouse = None;
@@ -744,6 +805,7 @@ impl Dock {
                 self.press = Some(Press { uid: self.items[i].uid, u, v });
             }
             (3, Some(i)) if matches!(self.items[i].kind, Kind::App { .. }) => self.open_app_menu(ctx, i),
+            (3, Some(i)) if matches!(self.items[i].kind, Kind::Stack(_)) => self.open_stack_menu(ctx, i),
             (3, _) if hit.is_some() || self.on_shelf(u, v) => self.open_dock_menu(ctx, u),
             _ => {}
         }
@@ -752,7 +814,7 @@ impl Dock {
     pub fn on_release(&mut self, ctx: &mut Ctx, button: u8, x: f32, y: f32) -> Option<Action> {
         self.needs_frame = true;
         if let Some(m) = &self.menu {
-            let act = m.hit(x, y).map(|k| m.items[k].1);
+            let act = m.hit(x, y).and_then(|k| m.action(k));
             if act.is_some() {
                 self.close_menu(ctx);
             }
@@ -776,6 +838,7 @@ impl Dock {
             Kind::Launchpad => Some(Action::ToggleLaunchpad),
             Kind::Trash => Some(Action::OpenTrash),
             Kind::App { app, .. } => Some(Action::Launch(app)),
+            Kind::Stack(i) => Some(Action::OpenStack(i)),
             Kind::Sep(_) => None,
         }
     }
@@ -785,17 +848,32 @@ impl Dock {
             return;
         };
         let running = ctx.running.contains_key(&app);
-        let mut items = vec![(if running { "Mostrar" } else { "Abrir" }.to_string(), Action::Launch(app))];
+        let item = |label: &str, action| Entry::Item { label: label.to_string(), sub: None, action, check: false };
+        let mut entries = Vec::new();
+        // Arquivos que o app abriu por último (recently-used.xbel).
+        ctx.recent = if ctx.settings.recents && ctx.apps[app].launchable() { crate::files::recent_for(&ctx.apps[app], 5) } else { Vec::new() };
+        if !ctx.recent.is_empty() {
+            entries.push(Entry::Header("Recentes".into()));
+            for (k, p) in ctx.recent.iter().enumerate() {
+                let label = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                let sub = p.parent().map(crate::files::tilde);
+                entries.push(Entry::Item { label, sub, action: Action::OpenRecent(app, k), check: false });
+            }
+            entries.push(Entry::Sep);
+        }
+        entries.push(item(if running { "Mostrar" } else { "Abrir" }, Action::Launch(app)));
+        if running && ctx.apps[app].launchable() {
+            entries.push(item("Nova janela", Action::NewWindow(app)));
+        }
         if ctx.apps[app].launchable() {
-            let l = if pinned { "Remover do Dock" } else { "Manter no Dock" };
-            items.push((l.to_string(), Action::TogglePin(app)));
+            entries.push(Entry::Item { label: "Manter no Dock".into(), sub: None, action: Action::TogglePin(app), check: pinned });
         }
         if running {
-            items.push(("Encerrar".to_string(), Action::Quit(app)));
+            entries.push(item("Encerrar", Action::Quit(app)));
         }
         let (cs, _, _) = self.layout(true);
         let far = self.base() + self.icon() * self.items[i].scale.value;
-        self.show_menu(ctx, items, cs[i], far + 10.0);
+        self.show_entries(ctx, entries, cs[i], far + 10.0);
     }
 
     /// Menu da própria dock (clique direito no separador, na prateleira, no Launchpad ou na Lixeira).
@@ -819,8 +897,72 @@ impl Dock {
         self.show_menu(ctx, items, u, far);
     }
 
+    fn open_stack_menu(&mut self, ctx: &mut Ctx, i: usize) {
+        let Kind::Stack(s) = self.items[i].kind else { return };
+        let Some(st) = ctx.stacks.get(s) else { return };
+        let item = |label: &str, action, check| Entry::Item { label: label.to_string(), sub: None, action, check };
+        let mut e = vec![item("Abrir em Arquivos", Action::OpenStackFolder(s), false), Entry::Sep, Entry::Header("Exibir como".into())];
+        for (st_, l) in [(Style::Auto, "Automático"), (Style::Orbit, "Órbita"), (Style::Panel, "Painel")] {
+            e.push(item(l, Action::SetStackStyle(s, st_), st.style == st_));
+        }
+        e.push(Entry::Header("Ordenar por".into()));
+        for (so, l) in [(Sort::Recent, "Recentes"), (Sort::Name, "Nome"), (Sort::Kind, "Tipo")] {
+            e.push(item(l, Action::SetStackSort(s, so), st.sort == so));
+        }
+        e.push(Entry::Sep);
+        e.push(item("Remover da Dock", Action::RemoveStack(s), false));
+        let (cs, _, _) = self.layout(true);
+        let far = self.base() + self.icon() * self.items[i].scale.value;
+        self.show_entries(ctx, e, cs[i], far + 10.0);
+    }
+
+    /// Acrescenta uma gaveta (índice já em `ctx.stacks`) na posição `u`, antes da Lixeira.
+    pub fn add_stack(&mut self, ctx: &Ctx, s: usize) {
+        let it = self.item(Kind::Stack(s), 0.0);
+        let at = pos_of(&self.items, Kind::Trash);
+        self.items.insert(at, it);
+        let _ = ctx;
+        self.needs_frame = true;
+    }
+
+    /// Tira a gaveta `s` da dock (os índices das seguintes diminuem, como em `ctx.stacks`).
+    pub fn remove_stack(&mut self, s: usize) {
+        for it in &mut self.items {
+            match it.kind {
+                Kind::Stack(j) if j == s => {
+                    it.removing = true;
+                    it.presence.target = 0.0;
+                    it.kind = Kind::Stack(usize::MAX);
+                }
+                Kind::Stack(j) if j > s && j != usize::MAX => it.kind = Kind::Stack(j - 1),
+                _ => {}
+            }
+        }
+        self.needs_frame = true;
+    }
+
+    /// Posição da gaveta na tela (para abrir o popover junto dela).
+    pub fn stack_anchor(&self, s: usize) -> Option<crate::stack::Anchor> {
+        let i = self.items.iter().position(|it| it.kind == Kind::Stack(s) && !it.removing)?;
+        Some(self.anchor_of(i))
+    }
+
+    fn anchor_of(&self, i: usize) -> crate::stack::Anchor {
+        let (cs, _, _) = self.layout(true);
+        let size = self.icon() * self.items[i].scale.value;
+        let o = (self.origin.0 as f32, self.origin.1 as f32);
+        let c = self.uv_to_win(cs[i], self.base() + size / 2.0);
+        let e = self.uv_to_win(cs[i], self.shelf_far().max(self.base() + size));
+        crate::stack::Anchor { icon: (o.0 + c.0, o.1 + c.1), edge_pt: (o.0 + e.0, o.1 + e.1), edge: self.s.edge }
+    }
+
     fn show_menu(&mut self, ctx: &mut Ctx, items: Vec<(String, Action)>, u: f32, v: f32) {
-        let mut m = Menu::new(items, &ctx.text);
+        let entries = items.into_iter().map(|(label, action)| Entry::Item { label, sub: None, action, check: false }).collect();
+        self.show_entries(ctx, entries, u, v);
+    }
+
+    fn show_entries(&mut self, ctx: &mut Ctx, entries: Vec<Entry>, u: f32, v: f32) {
+        let mut m = Menu::rich(entries, &ctx.text);
         let (w, h) = m.size();
         let (x, y) = self.place_box(u, v, w, h);
         m.place(x, y, self.uv_to_win(u, v), (self.ww, self.wh));
@@ -919,61 +1061,134 @@ impl Dock {
             } else {
                 d[2..5].to_vec()
             };
-            self.dnd = Some(Dnd { source: d[0], accept: types.contains(&a.TEXT_URI_LIST), u: 0.0 });
+            let accept = types.contains(&a.TEXT_URI_LIST);
+            self.dnd = Some(Dnd { source: d[0], accept, u: 0.0, paths: Vec::new(), have_data: false, dropped: false, compat: Default::default(), target: None });
+            // Pede a lista já agora: com o tipo do arquivo, a dock destaca os apps que o abrem.
+            if accept {
+                let _ = ctx.conn.convert_selection(self.win, a.XdndSelection, a.TEXT_URI_LIST, a._RDOCK_DND, x11rb::CURRENT_TIME);
+            }
         } else if e.type_ == a.XdndPosition {
-            let Some(dnd) = &self.dnd else { return };
             let (rx, ry) = ((d[2] >> 16) as f32, (d[2] & 0xffff) as f32);
             let (u, v) = self.win_to_uv(rx - self.origin.0 as f32, ry - self.origin.1 as f32);
-            let (source, accept) = (dnd.source, dnd.accept);
-            if let Some(dnd) = &mut self.dnd {
-                dnd.u = u;
-            }
+            // Perto de um separador conta como vão: é onde uma pasta vira gaveta.
+            let target = if self.near_sep(u).is_some() { None } else { self.hit(u, v) };
+            let Some(dnd) = &mut self.dnd else { return };
+            dnd.u = u;
+            dnd.target = target;
+            let ok = dnd.accept && Self::drop_kind(ctx, dnd, target.map(|i| self.items[i].kind)).is_some();
+            let source = dnd.source;
             // Os ícones se ampliam sob o arquivo arrastado, como sob o mouse.
             self.mouse = Some((u, v));
             self.needs_frame = true;
-            let flags = if accept { 1 | 2 } else { 2 };
-            self.xdnd_send(ctx, source, a.XdndStatus, [self.win, flags, 0, 0, if accept { a.XdndActionCopy } else { 0 }]);
+            let act = if ok { a.XdndActionCopy } else { 0 };
+            self.xdnd_send(ctx, source, a.XdndStatus, [self.win, if ok { 3 } else { 2 }, 0, 0, act]);
         } else if e.type_ == a.XdndLeave {
             self.dnd = None;
             self.mouse = None;
             self.needs_frame = true;
         } else if e.type_ == a.XdndDrop {
-            let Some(dnd) = &self.dnd else { return };
-            if dnd.accept {
-                let _ = ctx.conn.convert_selection(self.win, a.XdndSelection, a.TEXT_URI_LIST, a._RDOCK_DND, d[2]);
-            } else {
-                self.xdnd_send(ctx, dnd.source, a.XdndFinished, [self.win, 0, 0, 0, 0]);
+            let Some(dnd) = &mut self.dnd else { return };
+            if !dnd.accept {
+                let source = dnd.source;
+                self.xdnd_send(ctx, source, a.XdndFinished, [self.win, 0, 0, 0, 0]);
                 self.dnd = None;
+            } else if dnd.have_data {
+                self.perform_drop(ctx);
+            } else {
+                dnd.dropped = true;
+                let _ = ctx.conn.convert_selection(self.win, a.XdndSelection, a.TEXT_URI_LIST, a._RDOCK_DND, d[2]);
             }
         }
     }
 
-    /// Chegou a lista de URIs soltas: fixa cada .desktop na posição do soltar.
+    /// Chegou a lista de URIs: guarda e calcula os apps compatíveis (ou executa o soltar pendente).
     pub fn on_xdnd_data(&mut self, ctx: &mut Ctx, property: Atom) {
+        let data = if property != x11rb::NONE {
+            ctx.conn.get_property(true, self.win, property, AtomEnum::ANY, 0, 1 << 20).ok().and_then(|c| c.reply().ok()).map(|r| r.value).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let Some(dnd) = &mut self.dnd else { return };
+        dnd.paths = String::from_utf8_lossy(&data).lines().filter_map(|u| crate::apps::uri_to_path(u.trim())).collect();
+        dnd.have_data = true;
+        if let Some(p) = dnd.paths.first() {
+            let mime = crate::files::mime_of(p, p.is_dir());
+            let top = format!("{}/*", mime.split('/').next().unwrap_or(""));
+            dnd.compat = (0..ctx.apps.len()).filter(|&i| ctx.apps[i].launchable() && ctx.apps[i].mime.iter().any(|m| *m == mime || *m == top)).collect();
+        }
+        if dnd.dropped {
+            self.perform_drop(ctx);
+        }
+        self.needs_frame = true;
+    }
+
+    /// Separador (índice) a até ~20 px de `u`.
+    fn near_sep(&self, u: f32) -> Option<usize> {
+        let (cs, _, _) = self.layout(true);
+        (0..self.items.len()).find(|&i| matches!(self.items[i].kind, Kind::Sep(_)) && self.items[i].presence.value > 0.5 && (cs[i] - u).abs() < SEP_W + 4.0)
+    }
+
+    /// O que acontece ao soltar sobre `target` (None = nada aceito).
+    fn drop_kind(ctx: &Ctx, dnd: &Dnd, target: Option<Kind>) -> Option<DropKind> {
+        if !dnd.have_data {
+            return Some(DropKind::Pending);
+        }
+        if dnd.paths.is_empty() {
+            return None;
+        }
+        match target {
+            // Só os apps que abrem o tipo do arquivo aceitam; os outros recusam.
+            Some(Kind::App { app, .. }) => dnd.compat.contains(&app).then_some(DropKind::OpenWith(app)),
+            Some(Kind::Stack(s)) if s < ctx.stacks.len() => Some(DropKind::ToStack(s)),
+            Some(Kind::Trash) => Some(DropKind::Trash),
+            _ => dnd.paths.iter().any(|p| p.is_dir() || p.extension().is_some_and(|e| e == "desktop")).then_some(DropKind::Add),
+        }
+    }
+
+    fn perform_drop(&mut self, ctx: &mut Ctx) {
         let Some(dnd) = self.dnd.take() else { return };
         let a = ctx.atoms;
-        let mut ok = false;
-        if property != x11rb::NONE {
-            let data = ctx
-                .conn
-                .get_property(true, self.win, property, AtomEnum::ANY, 0, 1 << 20)
-                .ok()
-                .and_then(|c| c.reply().ok())
-                .map(|r| r.value)
-                .unwrap_or_default();
-            for uri in String::from_utf8_lossy(&data).lines() {
-                let Some(path) = crate::apps::uri_to_path(uri.trim()) else { continue };
-                if path.extension().is_some_and(|e| e == "desktop") {
-                    if let Some(app) = ctx.app_for_file(&path) {
-                        self.pin_at(ctx, app, dnd.u);
-                        ok = true;
+        let kind = Self::drop_kind(ctx, &dnd, dnd.target.map(|i| self.items[i].kind));
+        let ctrl = ctx.conn.query_pointer(ctx.root).ok().and_then(|c| c.reply().ok()).is_some_and(|r| u16::from(r.mask) & u16::from(KeyButMask::CONTROL) != 0);
+        let mut ok = true;
+        match kind {
+            Some(DropKind::OpenWith(app)) => {
+                crate::files::open_with(&ctx.apps[app], &dnd.paths);
+                if let Some(i) = dnd.target {
+                    self.items[i].press.value = 0.6;
+                }
+            }
+            // Soltar numa gaveta move o arquivo; com Ctrl, copia.
+            Some(DropKind::ToStack(s)) => crate::files::transfer(&dnd.paths, &ctx.stacks[s].path.clone(), ctrl),
+            Some(DropKind::Trash) => crate::files::trash(&dnd.paths),
+            Some(DropKind::Add) => {
+                for p in &dnd.paths {
+                    if p.extension().is_some_and(|e| e == "desktop") {
+                        if let Some(app) = ctx.app_for_file(p) {
+                            self.pin_at(ctx, app, dnd.u);
+                        }
+                    } else if p.is_dir() && !ctx.stacks.iter().any(|s| &s.path == p) {
+                        self.pending_stack = Some(p.clone());
                     }
                 }
             }
+            _ => ok = false,
         }
         self.xdnd_send(ctx, dnd.source, a.XdndFinished, [self.win, ok as u32, if ok { a.XdndActionCopy } else { 0 }, 0, 0]);
         self.mouse = None;
         self.needs_frame = true;
+    }
+
+    /// Rótulo da tooltip enquanto um arquivo passa sobre o item.
+    fn dnd_label(&self, ctx: &Ctx, dnd: &Dnd, i: usize) -> Option<String> {
+        let ctrl_copy = "";
+        let _ = ctrl_copy;
+        Some(match Self::drop_kind(ctx, dnd, Some(self.items[i].kind))? {
+            DropKind::OpenWith(app) => format!("Abrir com {}", ctx.apps[app].name),
+            DropKind::ToStack(s) => format!("Mover para {}", ctx.stacks[s].name()),
+            DropKind::Trash => "Mover para a Lixeira".into(),
+            _ => return None,
+        })
     }
 
     /// Fixa `app` na posição `u` da dock (soltar um .desktop vindo de fora).
@@ -1119,7 +1334,22 @@ impl Dock {
         };
         let (base, _, _) = self.layout(false);
         let targets: Vec<f32> = base.iter().map(|&b| hover_u.map_or(1.0, |mu| self.mag(mu - b))).collect();
-        for (it, target) in self.items.iter_mut().zip(targets) {
+        // Arrastando um arquivo: apps que o abrem sobem 12 px, os outros apps esmaecem.
+        let highlight = self.dnd.as_ref().filter(|d| d.have_data && !d.compat.is_empty() && ctx.settings.drag_highlight);
+        let looks: Vec<(f32, f32)> = self
+            .items
+            .iter()
+            .map(|it| match (highlight, it.kind) {
+                (Some(d), Kind::App { app, .. }) if d.compat.contains(&app) => (1.0, 0.0),
+                (Some(_), Kind::App { .. } | Kind::Launchpad) => (0.0, 1.0),
+                _ => (0.0, 0.0),
+            })
+            .collect();
+        for ((it, target), (lift, dim)) in self.items.iter_mut().zip(targets).zip(looks) {
+            it.lift.target = lift;
+            it.dim.target = dim;
+            anim |= it.lift.step(dt);
+            anim |= it.dim.step(dt);
             if let Kind::Sep(0) = it.kind {
                 it.presence.target = if has_unpinned { 1.0 } else { 0.0 };
             }
@@ -1148,11 +1378,29 @@ impl Dock {
         } else {
             None
         };
-        match hovered {
-            Some(i) => {
-                self.tooltip.uid = Some(self.items[i].uid);
-                self.tooltip.label = ctx.text.ellipsize(&label(ctx, self.items[i].kind), 15.5, TOOLTIP_MAX_W);
-                self.tooltip.alpha.target = 1.0;
+        // App parado sob o mouse (a prévia de janelas abre depois de um tempo).
+        let hover_app = hovered.and_then(|i| match self.items[i].kind {
+            Kind::App { app, .. } if self.dnd.is_none() => Some(app),
+            _ => None,
+        });
+        if hover_app != self.hover_since.map(|h| h.0) {
+            self.hover_since = hover_app.map(|a| (a, now));
+        }
+        let text = hovered.and_then(|i| {
+            let l = match &self.dnd {
+                Some(d) => self.dnd_label(ctx, d, i)?,
+                None => label(ctx, self.items[i].kind),
+            };
+            Some((self.items[i].uid, l))
+        });
+        match text {
+            Some((uid, l)) => {
+                // Só reencurta o texto quando o item muda (evita medir a fonte a cada quadro).
+                if self.tooltip.uid != Some(uid) || self.dnd.is_some() || matches!(self.items[hovered.unwrap_or(0)].kind, Kind::Stack(_)) {
+                    self.tooltip.label = ctx.text.ellipsize(&l, 15.5, TOOLTIP_MAX_W);
+                }
+                self.tooltip.uid = Some(uid);
+                self.tooltip.alpha.target = if self.preview_open { 0.0 } else { 1.0 };
             }
             None => self.tooltip.alpha.target = 0.0,
         }
@@ -1169,6 +1417,21 @@ impl Dock {
     }
 
     // ---------------------------------------------------------------- desenho
+
+    /// App sob o mouse há pelo menos `delay` (para a prévia de janelas).
+    pub fn hovered_app(&self, delay: Duration) -> Option<(usize, crate::stack::Anchor)> {
+        let (app, since) = self.hover_since?;
+        if since.elapsed() < delay || self.menu.is_some() || self.drag.is_some() || self.press.is_some() {
+            return None;
+        }
+        let i = self.find_app(app)?;
+        Some((app, self.anchor_of(i)))
+    }
+
+    /// App sob o mouse agora (sem esperar).
+    pub fn hover_app(&self) -> Option<usize> {
+        self.hover_since.map(|h| h.0)
+    }
 
     pub fn render(&mut self, ctx: &mut Ctx) -> R<()> {
         // Tudo o que foi desenhado no quadro anterior está dentro de `last_ext`: basta limpar ali.
@@ -1222,17 +1485,47 @@ impl Dock {
                 let ph = (b.t % BOUNCE_T) / BOUNCE_T;
                 icon * 0.62 * 4.0 * ph * (1.0 - ph)
             });
-            let edge_v = base + it.flip_v.value + bounce;
+            let edge_v = base + it.flip_v.value + bounce + 12.0 * it.lift.value;
             let (px, py) = self.uv_to_win(cu, edge_v + size / 2.0);
-            let key = icon_key(&ctx.apps, it.kind, self.trash_full);
-            draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, key, px, py - size / 2.0, size, p, it.press.value * 0.8);
+            let key = icon_key(&ctx.apps, &ctx.stacks, it.kind, self.trash_full);
+            let op = p * (1.0 - 0.6 * it.dim.value.clamp(0.0, 1.0));
+            draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, key, px, py - size / 2.0, size, op, it.press.value * 0.8);
             ext = union(ext, (px - size / 2.0, py - size / 2.0, px + size / 2.0, py + size / 2.0));
             if self.s.indicators && it.dot.value > 0.01 {
-                let (dx, dy) = self.uv_to_win(cu, MARGIN + 4.0);
-                draw::circle(&mut self.pix, dx, dy, 2.2, &draw::color(255, 255, 255, 0.9 * it.dot.value * p));
+                // Dois pontos quando o app tem duas ou mais janelas.
+                let many = matches!(it.kind, Kind::App { app, .. } if ctx.running.get(&app).is_some_and(|w| w.len() > 1));
+                let offs: &[f32] = if many { &[-3.5, 3.5] } else { &[0.0] };
+                for o in offs {
+                    let (dx, dy) = self.uv_to_win(cu + o, MARGIN + 4.0);
+                    draw::circle(&mut self.pix, dx, dy, 2.2, &draw::color(255, 255, 255, 0.9 * it.dot.value * op));
+                }
+            }
+            // Selo vermelho com a quantidade de arquivos novos na gaveta.
+            if let Kind::Stack(s) = it.kind {
+                if let Some(n) = ctx.stacks.get(s).map(|s| s.fresh).filter(|&n| n > 0) {
+                    let tp = ctx.text.get(&n.min(99).to_string(), 11.0, 0xffffff);
+                    let (tw, th) = (tp.width() as f32, tp.height() as f32);
+                    let r = (th / 2.0 + 1.0).max(9.0);
+                    let bw = (tw + 8.0).max(2.0 * r);
+                    let (bx, by) = (px + size / 2.0 - bw * 0.65, py - size / 2.0 - r * 0.35);
+                    draw::fill(&mut self.pix, &draw::rrect(bx, by, bw, 2.0 * r, r), &draw::color(236, 64, 52, op), Transform::identity());
+                    let tp = ctx.text.get(&n.min(99).to_string(), 11.0, 0xffffff);
+                    draw::blit_fast(&mut self.pix, tp, (bx + (bw - tw) / 2.0).round() as i32, (by + r - th / 2.0).round() as i32, op);
+                    ext = union(ext, (bx - 2.0, by - 2.0, bx + bw + 2.0, by + 2.0 * r + 2.0));
+                }
             }
             if self.tooltip.uid == Some(it.uid) {
                 (self.tooltip.u, self.tooltip.v) = (cu, edge_v + size + 10.0);
+            }
+        }
+
+        // Barra azul onde a pasta (ou o .desktop) vai entrar.
+        if let Some(d) = &self.dnd {
+            if d.target.is_none() && Self::drop_kind(ctx, d, None) == Some(DropKind::Add) {
+                if let Some(i) = self.near_sep(d.u) {
+                    let r = self.rect_win(cs[i] - 1.5, cs[i] + 1.5, MARGIN + 6.0, far - 6.0, false);
+                    draw::fill(&mut self.pix, &draw::rrect(r.0, r.1, r.2 - r.0, r.3 - r.1, 1.5), &draw::color(10, 132, 255, 1.0), Transform::identity());
+                }
             }
         }
 
@@ -1243,7 +1536,7 @@ impl Dock {
                 let size = icon * it.scale.value.max(1.0);
                 let (cu, cv) = self.drag_center(d, size);
                 let (px, py) = self.uv_to_win(cu, cv);
-                let key = icon_key(&ctx.apps, it.kind, self.trash_full);
+                let key = icon_key(&ctx.apps, &ctx.stacks, it.kind, self.trash_full);
                 let op = if d.remove { 0.55 } else { 1.0 };
                 draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, key, px, py - size / 2.0, size, op, 0.0);
                 ext = union(ext, (px - size, py - size, px + size, py + size));

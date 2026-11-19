@@ -85,6 +85,23 @@ pub fn icon(
     opacity: f32,
     darken: f32,
 ) {
+    icon_clip(pix, cache, icons, key, cx, top, size, opacity, darken, (i32::MIN, i32::MAX));
+}
+
+/// Como `icon`, mas só desenha as linhas `clip.0 <= y < clip.1` (listas com rolagem).
+#[allow(clippy::too_many_arguments)]
+pub fn icon_clip(
+    pix: &mut Pixmap,
+    cache: &mut ScaleCache,
+    icons: &HashMap<String, Icon>,
+    key: &str,
+    cx: f32,
+    top: f32,
+    size: f32,
+    opacity: f32,
+    darken: f32,
+    clip: (i32, i32),
+) {
     if size < 1.0 || opacity <= 0.003 {
         return;
     }
@@ -92,7 +109,7 @@ pub fn icon(
     let x = (cx - s as f32 / 2.0).round() as i32;
     let y = top.round() as i32;
     if let Some(p) = cache.get(icons, key, s) {
-        blit_fast(pix, p, x, y, opacity);
+        blit_fast_clip(pix, p, x, y, opacity, clip);
     }
     if darken > 0.01 {
         if let Some(icon) = icons.get(key) {
@@ -106,13 +123,18 @@ pub fn icon(
 
 /// Composição SourceOver (pré-multiplicada) em posição inteira, com opacidade.
 pub fn blit_fast(dst: &mut Pixmap, src: &Pixmap, x: i32, y: i32, opacity: f32) {
+    blit_fast_clip(dst, src, x, y, opacity, (i32::MIN, i32::MAX));
+}
+
+/// `blit_fast` limitado às linhas `clip.0 <= y < clip.1`.
+pub fn blit_fast_clip(dst: &mut Pixmap, src: &Pixmap, x: i32, y: i32, opacity: f32, clip: (i32, i32)) {
     let op = (opacity.clamp(0.0, 1.0) * 256.0) as u32;
     if op == 0 {
         return;
     }
     let (dw, dh) = (dst.width() as i32, dst.height() as i32);
     let (sw, sh) = (src.width() as i32, src.height() as i32);
-    let (x0, x1, y0, y1) = (x.max(0), (x + sw).min(dw), y.max(0), (y + sh).min(dh));
+    let (x0, x1, y0, y1) = (x.max(0), (x + sw).min(dw), y.max(0).max(clip.0), (y + sh).min(dh).min(clip.1));
     if x1 <= x0 || y1 <= y0 {
         return;
     }
@@ -348,4 +370,26 @@ impl Text {
         }
         pix
     }
+}
+
+/// Painel de vidro: o fundo desfocado `bg` (em coordenadas do pixmap, deslocado por `bg_off`)
+/// recortado no retângulo arredondado, uma camada escura `tint` por cima e um fio claro na borda.
+#[allow(clippy::too_many_arguments)]
+pub fn glass(pix: &mut Pixmap, bg: Option<&Pixmap>, bg_off: (f32, f32), x: f32, y: f32, w: f32, h: f32, r: f32, tint: f32, alpha: f32, tf: Transform) {
+    let path = rrect(x, y, w, h, r);
+    shadow_n(pix, x, y, w, h, r, alpha * 1.1, tf, 6);
+    if let (Some(bg), Some(p)) = (bg, &path) {
+        let shader = tiny_skia::Pattern::new(
+            bg.as_ref(),
+            tiny_skia::SpreadMode::Pad,
+            FilterQuality::Nearest,
+            alpha,
+            Transform::from_translate(bg_off.0, bg_off.1),
+        );
+        let paint = Paint { shader, anti_alias: true, ..Default::default() };
+        pix.fill_path(p, &paint, FillRule::Winding, tf, None);
+    }
+    let tint = if bg.is_some() { tint } else { 0.94 };
+    fill(pix, &path, &color(30, 28, 36, tint * alpha), tf);
+    stroke(pix, &rrect(x + 0.5, y + 0.5, w - 1.0, h - 1.0, r - 0.5), &color(255, 255, 255, 0.14 * alpha), 1.0, tf);
 }

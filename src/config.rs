@@ -75,6 +75,12 @@ pub struct Settings {
     pub indicators: bool,
     /// Multiplica o tamanho de todo texto da interface.
     pub text_scale: f32,
+    /// Miniaturas das janelas ao parar o mouse sobre um app.
+    pub previews: bool,
+    /// Destacar os apps que abrem o arquivo arrastado.
+    pub drag_highlight: bool,
+    /// Arquivos recentes no menu de cada app.
+    pub recents: bool,
 }
 
 pub const ICON_MIN: f32 = 32.0;
@@ -86,7 +92,7 @@ pub const TEXT_MAX: f32 = 1.8;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { icon_size: 52.0, magnification: true, max_size: 96.0, edge: Edge::Bottom, hide: HideMode::Never, bounce: true, indicators: true, text_scale: 1.3 }
+        Settings { icon_size: 52.0, magnification: true, max_size: 96.0, edge: Edge::Bottom, hide: HideMode::Never, bounce: true, indicators: true, text_scale: 1.3, previews: true, drag_highlight: true, recents: true }
     }
 }
 
@@ -131,6 +137,9 @@ pub fn load_settings() -> Settings {
             }
             "bounce" => s.bounce = flag(s.bounce),
             "indicators" => s.indicators = flag(s.indicators),
+            "previews" => s.previews = flag(s.previews),
+            "drag_highlight" => s.drag_highlight = flag(s.drag_highlight),
+            "recents" => s.recents = flag(s.recents),
             "text_scale" => s.text_scale = num(s.text_scale).clamp(TEXT_MIN, TEXT_MAX),
             _ => {}
         }
@@ -150,8 +159,8 @@ pub fn save_settings(s: &Settings) {
         HideMode::Smart => "smart",
     };
     let text = format!(
-        "icon_size={}\nmagnification={}\nmax_size={}\nposition={edge}\nhide={hide}\nbounce={}\nindicators={}\ntext_scale={:.2}\n",
-        s.icon_size, s.magnification, s.max_size, s.bounce, s.indicators, s.text_scale
+        "icon_size={}\nmagnification={}\nmax_size={}\nposition={edge}\nhide={hide}\nbounce={}\nindicators={}\ntext_scale={:.2}\npreviews={}\ndrag_highlight={}\nrecents={}\n",
+        s.icon_size, s.magnification, s.max_size, s.bounce, s.indicators, s.text_scale, s.previews, s.drag_highlight, s.recents
     );
     let p = settings_path();
     if let Some(dir) = p.parent() {

@@ -94,7 +94,7 @@ impl Launchpad {
 
     pub fn open(&mut self, ctx: &mut Ctx) -> R<()> {
         if !self.visible {
-            self.bg = capture_blurred(ctx, self.w as u32, self.h as u32);
+            self.bg = capture_blurred(ctx, (ctx.mon.0, ctx.mon.1, self.w as u32, self.h as u32), 0.7).map(|b| b.0);
             self.query.clear();
             self.refilter(ctx);
             self.page = 0;
@@ -275,7 +275,7 @@ impl Launchpad {
 
     pub fn on_release(&mut self, ctx: &mut Ctx, button: u8, x: f32, y: f32) -> Option<Action> {
         if let Some(m) = &self.menu {
-            let act = m.hit(x, y).map(|k| m.items[k].1);
+            let act = m.hit(x, y).and_then(|k| m.action(k));
             if act.is_some() {
                 self.menu = None;
                 self.needs_frame = true;
@@ -456,8 +456,9 @@ impl Launchpad {
 }
 
 /// Captura a tela, reduz 8×, aplica desfoque e escurece: vira o fundo "vidro fosco".
-fn capture_blurred(ctx: &Ctx, w: u32, h: u32) -> Option<Pixmap> {
-    let (mx, my, _, _) = ctx.mon;
+/// Captura a região (x, y, w, h) da tela, reduz 8×, desfoca e escurece por `dim`.
+/// Devolve o fundo "vidro fosco" e o brilho médio (0 a 1) da região.
+pub fn capture_blurred(ctx: &Ctx, (mx, my, w, h): (i32, i32, u32, u32), dim: f32) -> Option<(Pixmap, f32)> {
     let r = ctx
         .conn
         .get_image(ImageFormat::Z_PIXMAP, ctx.root, mx as i16, my as i16, w as u16, h as u16, !0)
@@ -491,14 +492,17 @@ fn capture_blurred(ctx: &Ctx, w: u32, h: u32) -> Option<Pixmap> {
         box_blur(&mut img, sw, sh, 3);
     }
     let mut small = Pixmap::new(sw as u32, sh as u32)?;
+    let mut lum = 0.0;
     for (px, c) in small.data_mut().chunks_exact_mut(4).zip(&img) {
-        px.copy_from_slice(&[(c[0] * 0.7) as u8, (c[1] * 0.7) as u8, (c[2] * 0.7) as u8, 255]);
+        lum += 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        px.copy_from_slice(&[(c[0] * dim) as u8, (c[1] * dim) as u8, (c[2] * dim) as u8, 255]);
     }
+    let lum = lum / (img.len().max(1) as f32 * 255.0);
     let mut full = Pixmap::new(w as u32, h as u32)?;
     let paint = PixmapPaint { quality: FilterQuality::Bilinear, ..Default::default() };
     let tf = Transform::from_scale(w as f32 / sw as f32, h as f32 / sh as f32);
     full.draw_pixmap(0, 0, small.as_ref(), &paint, tf, None);
-    Some(full)
+    Some((full, lum))
 }
 
 fn box_blur(img: &mut [[f32; 3]], w: usize, h: usize, r: usize) {

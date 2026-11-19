@@ -272,18 +272,26 @@ pub fn from_argb(w: u32, h: u32, data: &[u32]) -> Option<Pixmap> {
 }
 
 /// Carrega ícones em threads de fundo, na ordem pedida (ícones da dock primeiro).
+/// Carrega ícones em segundo plano. Uma chave pode ser:
+/// - um nome do tema, ou vários separados por `|` (vale o primeiro encontrado);
+/// - `thumb:<caminho>`: miniatura de uma imagem PNG/JPEG;
+/// - `@launchpad`: o ícone desenhado da grade de apps.
 pub fn spawn_loader(names: Vec<String>, tx: Sender<Msg>) {
-    let theme = Arc::new(Theme::load());
+    static THEME: std::sync::OnceLock<Arc<Theme>> = std::sync::OnceLock::new();
+    let theme = THEME.get_or_init(|| Arc::new(Theme::load())).clone();
+    let threads = names.len().clamp(1, 4);
     let queue = Arc::new(Mutex::new(VecDeque::from(names)));
-    for _ in 0..4 {
+    for _ in 0..threads {
         let (theme, queue, tx) = (theme.clone(), queue.clone(), tx.clone());
         std::thread::spawn(move || loop {
             let Some(name) = queue.lock().unwrap().pop_front() else { break };
             let pix = if name == "@launchpad" {
                 launchpad_icon()
+            } else if let Some(path) = name.strip_prefix("thumb:") {
+                thumbnail(std::path::Path::new(path)).unwrap_or_else(generic_icon)
             } else {
-                theme
-                    .find(&name)
+                name.split('|')
+                    .find_map(|n| theme.find(n))
                     .and_then(|p| rasterize(&p))
                     .or_else(|| theme.find("application-x-executable").and_then(|p| rasterize(&p)))
                     .unwrap_or_else(generic_icon)
@@ -293,4 +301,29 @@ pub fn spawn_loader(names: Vec<String>, tx: Sender<Msg>) {
             }
         });
     }
+}
+
+/// Miniatura (até 256 px) de uma imagem PNG ou JPEG.
+fn thumbnail(path: &std::path::Path) -> Option<Pixmap> {
+    let data = std::fs::read(path).ok()?;
+    let pix = if data.starts_with(&[0x89, b'P', b'N', b'G']) {
+        Pixmap::decode_png(&data).ok()?
+    } else {
+        let mut d = zune_jpeg::JpegDecoder::new(&data[..]);
+        let rgb = d.decode().ok()?;
+        let info = d.info()?;
+        let (w, h) = (info.width as u32, info.height as u32);
+        let mut p = Pixmap::new(w, h)?;
+        for (px, c) in p.data_mut().chunks_exact_mut(4).zip(rgb.chunks_exact(3)) {
+            px.copy_from_slice(&[c[0], c[1], c[2], 255]);
+        }
+        p
+    };
+    // Reduz pela maior dimensão, mantendo a proporção.
+    let k = (256.0 / pix.width().max(pix.height()) as f32).min(1.0);
+    let (w, h) = (((pix.width() as f32 * k).round() as u32).max(1), ((pix.height() as f32 * k).round() as u32).max(1));
+    let mut out = Pixmap::new(w, h)?;
+    let paint = tiny_skia::PixmapPaint { quality: tiny_skia::FilterQuality::Bicubic, ..Default::default() };
+    out.draw_pixmap(0, 0, pix.as_ref(), &paint, Transform::from_scale(k, k), None);
+    Some(out)
 }

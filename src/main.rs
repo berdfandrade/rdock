@@ -5,10 +5,13 @@ mod apps;
 mod config;
 mod dock;
 mod draw;
+mod files;
 mod icons;
 mod launchpad;
 mod menu;
+mod previews;
 mod settings;
+mod stack;
 mod x;
 
 use std::collections::{HashMap, HashSet};
@@ -41,11 +44,39 @@ pub enum Action {
     /// Arrastar um app do Launchpad para a dock: app e posição do ponteiro na tela.
     DragToDock(usize, f32, f32),
     OpenThemeFolder,
+    /// Gavetas (índice em `ctx.stacks`).
+    OpenStack(usize),
+    OpenStackFolder(usize),
+    SetStackStyle(usize, stack::Style),
+    SetStackSort(usize, stack::Sort),
+    RemoveStack(usize),
+    /// Arquivo recente `k` (em `ctx.recent`) com o app.
+    OpenRecent(usize, usize),
+    NewWindow(usize),
 }
 
 pub enum Msg {
     X(Event),
     Icon(String, icons::Icon),
+    /// Uma pasta observada (inotify, pelo descritor da observação) mudou.
+    Dir(i32),
+    /// Miniatura de uma janela para a prévia.
+    Thumb(Window, tiny_skia::Pixmap),
+}
+
+/// As janelas da interface.
+struct Ui {
+    dock: dock::Dock,
+    lp: launchpad::Launchpad,
+    sw: settings::SettingsWin,
+    sv: stack::StackView,
+    pv: previews::Previews,
+}
+
+impl Ui {
+    fn busy(&self) -> bool {
+        self.dock.needs_frame || self.lp.needs_frame || self.sw.needs_frame || self.sv.needs_frame || self.pv.needs_frame
+    }
 }
 
 /// Estado compartilhado entre a dock e o Launchpad.
@@ -79,6 +110,12 @@ pub struct Ctx {
     icons_requested: HashSet<String>,
     /// Último timestamp X recebido (usado ao ativar janelas).
     pub time: u32,
+    pub stacks: Vec<stack::Stack>,
+    watcher: Option<stack::Watcher>,
+    /// Arquivos recentes mostrados no último menu de app.
+    pub recent: Vec<std::path::PathBuf>,
+    /// "Reduzir movimento": as molas viram só fade.
+    pub reduce_motion: bool,
 }
 
 impl Ctx {
@@ -102,8 +139,14 @@ impl Ctx {
     }
 
     pub fn ensure_icon(&mut self, name: String) {
-        if !self.icons.contains_key(&name) && self.icons_requested.insert(name.clone()) {
-            icons::spawn_loader(vec![name], self.icon_tx.clone());
+        self.ensure_icons(vec![name]);
+    }
+
+    /// Pede de uma vez os ícones que ainda faltam (um único carregador para o lote).
+    pub fn ensure_icons(&mut self, names: Vec<String>) {
+        let missing: Vec<String> = names.into_iter().filter(|n| !self.icons.contains_key(n) && self.icons_requested.insert(n.clone())).collect();
+        if !missing.is_empty() {
+            icons::spawn_loader(missing, self.icon_tx.clone());
         }
     }
 
@@ -265,19 +308,30 @@ fn main() -> R<()> {
         icon_tx: tx.clone(),
         icons_requested: HashSet::new(),
         time: x11rb::CURRENT_TIME,
+        stacks: stack::load(),
+        watcher: stack::Watcher::new(tx.clone()),
+        recent: Vec::new(),
+        reduce_motion: reduce_motion(),
     };
     ctx.text.scale = ctx.settings.text_scale;
-    let mut dock = dock::Dock::new(&mut ctx)?;
-    let mut lp = launchpad::Launchpad::new(&mut ctx)?;
-    let mut sw = settings::SettingsWin::new(&mut ctx)?;
+    if let Some(w) = &ctx.watcher {
+        ctx.stacks.iter_mut().for_each(|s| w.watch(s));
+    }
+    let mut ui = Ui {
+        dock: dock::Dock::new(&mut ctx)?,
+        lp: launchpad::Launchpad::new(&mut ctx)?,
+        sw: settings::SettingsWin::new(&mut ctx)?,
+        sv: stack::StackView::new(&mut ctx)?,
+        pv: previews::Previews::new(&mut ctx, tx.clone())?,
+    };
     // O dono da seleção é a janela do Launchpad, que nunca é recriada (a da dock é, ao mudar de borda).
-    conn.set_selection_owner(lp.win, atoms._RDOCK_RUNNING, x11rb::CURRENT_TIME)?;
+    conn.set_selection_owner(ui.lp.win, atoms._RDOCK_RUNNING, x11rb::CURRENT_TIME)?;
     if open_settings {
-        sw.open(&mut ctx)?;
+        ui.sw.open(&mut ctx)?;
     }
 
     let mut names = vec!["@launchpad".to_string()];
-    names.extend(dock.icon_names(&ctx));
+    names.extend(ui.dock.icon_names(&ctx));
     names.extend(ctx.apps.iter().map(|a| a.icon.clone()));
     let mut seen = HashSet::new();
     names.retain(|n| seen.insert(n.clone()));
@@ -295,15 +349,23 @@ fn main() -> R<()> {
 
     ctx.scan_clients();
     ctx.update_active();
-    dock.sync_running(&ctx);
+    ui.dock.sync_running(&ctx);
     conn.flush()?;
+    const PREVIEW_DELAY: Duration = Duration::from_millis(400);
 
     const FRAME: Duration = Duration::from_micros(16_667);
     let mut last_frame = Instant::now();
     let mut last_trash = Instant::now();
     loop {
-        let animating = dock.needs_frame || lp.needs_frame || sw.needs_frame;
-        let timeout = if animating { FRAME.saturating_sub(last_frame.elapsed()) } else { Duration::from_secs(2) };
+        // Mouse parado sobre um app: acorda a tempo de abrir a prévia de janelas.
+        let waiting = ctx.settings.previews && ui.dock.hover_app().is_some() && !ui.pv.visible;
+        let timeout = if ui.busy() {
+            FRAME.saturating_sub(last_frame.elapsed())
+        } else if waiting {
+            Duration::from_millis(60)
+        } else {
+            Duration::from_secs(2)
+        };
         let mut msgs = Vec::new();
         match rx.recv_timeout(timeout) {
             Ok(m) => msgs.push(m),
@@ -312,30 +374,64 @@ fn main() -> R<()> {
         }
         msgs.extend(rx.try_iter());
         for m in msgs {
-            for act in handle(&mut ctx, &mut dock, &mut lp, &mut sw, m) {
-                dispatch(&mut ctx, &mut dock, &mut lp, &mut sw, act)?;
+            for act in handle(&mut ctx, &mut ui, m) {
+                dispatch(&mut ctx, &mut ui, act)?;
             }
+        }
+        // Pasta solta na dock: vira gaveta.
+        if let Some(path) = ui.dock.pending_stack.take() {
+            let mut st = stack::Stack::new(path, stack::Style::Auto, stack::Sort::Recent, stack::now());
+            if let Some(w) = &ctx.watcher {
+                w.watch(&mut st);
+            }
+            ctx.ensure_icon(st.icon.clone());
+            ctx.stacks.push(st);
+            stack::save(&ctx.stacks);
+            ui.dock.add_stack(&ctx, ctx.stacks.len() - 1);
+        }
+        // Prévia de janelas
+        if ctx.settings.previews && !ui.sv.visible && !ui.lp.visible {
+            if let Some((app, anchor)) = ui.dock.hovered_app(PREVIEW_DELAY) {
+                let has_windows = ctx.running.get(&app).is_some_and(|w| !w.is_empty());
+                if has_windows && (!ui.pv.visible || ui.pv.closing || ui.pv.app != app) {
+                    ui.pv.open(&mut ctx, app, anchor)?;
+                }
+            }
+        }
+        ui.pv.update(&ctx, ui.dock.hover_app());
+        let open = ui.pv.visible && !ui.pv.closing;
+        if open != ui.dock.preview_open {
+            ui.dock.preview_open = open;
+            ui.dock.needs_frame = true;
         }
         if last_trash.elapsed() > Duration::from_secs(2) {
             last_trash = Instant::now();
-            dock.set_trash_full(dock::trash_is_full());
+            ui.dock.set_trash_full(dock::trash_is_full());
         }
-        if (dock.needs_frame || lp.needs_frame || sw.needs_frame) && last_frame.elapsed() >= FRAME.mul_f32(0.9) {
+        if ui.busy() && last_frame.elapsed() >= FRAME.mul_f32(0.9) {
             let dt = last_frame.elapsed().as_secs_f32().min(1.0 / 30.0);
             last_frame = Instant::now();
-            if dock.needs_frame {
-                dock.needs_frame = dock.tick(&mut ctx, dt);
-                dock.render(&mut ctx)?;
+            if ui.dock.needs_frame {
+                ui.dock.needs_frame = ui.dock.tick(&mut ctx, dt);
+                ui.dock.render(&mut ctx)?;
             }
-            if lp.needs_frame {
-                lp.needs_frame = lp.tick(&mut ctx, dt);
-                lp.render(&mut ctx)?;
+            if ui.lp.needs_frame {
+                ui.lp.needs_frame = ui.lp.tick(&mut ctx, dt);
+                ui.lp.render(&mut ctx)?;
             }
-            if sw.needs_frame {
-                sw.needs_frame = sw.tick(&ctx, dt);
-                sw.render(&mut ctx)?;
+            if ui.sw.needs_frame {
+                ui.sw.needs_frame = ui.sw.tick(&ctx, dt);
+                ui.sw.render(&mut ctx)?;
             }
-        } else if !(dock.needs_frame || lp.needs_frame || sw.needs_frame) {
+            if ui.sv.needs_frame {
+                ui.sv.needs_frame = ui.sv.tick(&mut ctx, dt);
+                ui.sv.render(&mut ctx)?;
+            }
+            if ui.pv.needs_frame {
+                ui.pv.needs_frame = ui.pv.tick(&ctx, dt);
+                ui.pv.render(&mut ctx)?;
+            }
+        } else if !ui.busy() {
             // Ocioso: o próximo quadro começa com dt de um quadro, não do tempo parado.
             last_frame = Instant::now() - FRAME;
         }
@@ -344,12 +440,26 @@ fn main() -> R<()> {
     Ok(())
 }
 
-fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, sw: &mut settings::SettingsWin, msg: Msg) -> Vec<Action> {
+fn handle(ctx: &mut Ctx, ui: &mut Ui, msg: Msg) -> Vec<Action> {
     let ev = match msg {
         Msg::Icon(name, icon) => {
             ctx.icons.insert(name, icon);
-            dock.needs_frame = true;
-            lp.damage();
+            ui.dock.needs_frame = true;
+            ui.lp.damage();
+            ui.sv.needs_frame |= ui.sv.visible;
+            ui.pv.needs_frame |= ui.pv.visible;
+            return vec![];
+        }
+        Msg::Dir(wd) => {
+            if let Some(i) = stack::by_wd(&ctx.stacks, wd) {
+                ctx.stacks[i].refresh();
+                ui.dock.needs_frame = true;
+                ui.sv.changed(ctx, i);
+            }
+            return vec![];
+        }
+        Msg::Thumb(w, pix) => {
+            ui.pv.on_thumb(w, pix);
             return vec![];
         }
         Msg::X(ev) => ev,
@@ -359,94 +469,113 @@ fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, s
         Event::MotionNotify(e) => {
             ctx.time = e.time;
             let (x, y) = (e.event_x as f32, e.event_y as f32);
-            if e.event == dock.win {
-                dock.on_motion(ctx, x, y);
-            } else if e.event == lp.win {
-                out.extend(lp.on_motion(x, y));
-            } else if e.event == sw.win {
-                out.extend(sw.on_motion(ctx, x, y));
+            if e.event == ui.dock.win {
+                ui.dock.on_motion(ctx, x, y);
+            } else if e.event == ui.lp.win {
+                out.extend(ui.lp.on_motion(x, y));
+            } else if e.event == ui.sw.win {
+                out.extend(ui.sw.on_motion(ctx, x, y));
+            } else if e.event == ui.sv.win {
+                ui.sv.on_motion(ctx, x, y);
+            } else if e.event == ui.pv.win {
+                ui.pv.on_motion(ctx, x, y);
             }
         }
-        Event::EnterNotify(e) if e.event == dock.win => {
+        Event::EnterNotify(e) if e.event == ui.pv.win => ui.pv.on_crossing(true),
+        Event::LeaveNotify(e) if e.event == ui.pv.win && e.detail != NotifyDetail::INFERIOR => ui.pv.on_crossing(false),
+        Event::EnterNotify(e) if e.event == ui.dock.win => {
             ctx.time = e.time;
-            dock.on_motion(ctx, e.event_x as f32, e.event_y as f32);
+            ui.dock.on_motion(ctx, e.event_x as f32, e.event_y as f32);
         }
-        Event::LeaveNotify(e) if e.event == dock.win && e.mode == NotifyMode::NORMAL => dock.on_leave(),
+        Event::LeaveNotify(e) if e.event == ui.dock.win && e.mode == NotifyMode::NORMAL => ui.dock.on_leave(),
         Event::ButtonPress(e) => {
             ctx.time = e.time;
             let (x, y) = (e.event_x as f32, e.event_y as f32);
-            if e.event == dock.win {
-                dock.on_press(ctx, e.detail, x, y);
-            } else if e.event == lp.win {
-                lp.on_press(ctx, e.detail, x, y);
-            } else if e.event == sw.win {
-                out.extend(sw.on_press(ctx, e.detail, x, y));
+            if e.event == ui.dock.win {
+                ui.dock.on_press(ctx, e.detail, x, y);
+            } else if e.event == ui.lp.win {
+                ui.lp.on_press(ctx, e.detail, x, y);
+            } else if e.event == ui.sw.win {
+                out.extend(ui.sw.on_press(ctx, e.detail, x, y));
+            } else if e.event == ui.sv.win {
+                ui.sv.on_press(ctx, e.detail, x, y);
             }
         }
         Event::ButtonRelease(e) => {
             ctx.time = e.time;
             let (x, y) = (e.event_x as f32, e.event_y as f32);
-            let act = if e.event == dock.win {
-                dock.on_release(ctx, e.detail, x, y)
-            } else if e.event == lp.win {
-                lp.on_release(ctx, e.detail, x, y)
-            } else if e.event == sw.win {
-                sw.on_release(ctx)
+            let act = if e.event == ui.dock.win {
+                ui.dock.on_release(ctx, e.detail, x, y)
+            } else if e.event == ui.lp.win {
+                ui.lp.on_release(ctx, e.detail, x, y)
+            } else if e.event == ui.sw.win {
+                ui.sw.on_release(ctx)
+            } else if e.event == ui.pv.win {
+                ui.pv.on_release(ctx, e.detail, x, y);
+                None
             } else {
                 None
             };
             out.extend(act);
         }
-        Event::KeyPress(e) if lp.visible => {
+        Event::KeyPress(e) if ui.sv.visible => {
             ctx.time = e.time;
-            out.extend(lp.on_key(ctx, e.detail, e.state));
+            ui.sv.on_key(ctx, e.detail, e.state);
+        }
+        Event::KeyPress(e) if ui.lp.visible => {
+            ctx.time = e.time;
+            out.extend(ui.lp.on_key(ctx, e.detail, e.state));
         }
         Event::PropertyNotify(e) if e.window == ctx.root => {
             let a = ctx.atoms;
             if e.atom == a._NET_CLIENT_LIST || e.atom == a._NET_CLIENT_LIST_STACKING {
                 ctx.scan_clients();
-                dock.sync_running(ctx);
+                ui.dock.sync_running(ctx);
             }
             if e.atom == a._NET_ACTIVE_WINDOW || e.atom == a._NET_CLIENT_LIST_STACKING {
                 ctx.update_active();
-                dock.needs_frame = true;
+                ui.dock.needs_frame = true;
             }
         }
         // A janela ativa mudou de lugar, foi minimizada ou restaurada.
         Event::PropertyNotify(e) if e.window == ctx.active_win && e.atom == ctx.atoms._NET_WM_STATE => {
             ctx.update_active();
-            dock.needs_frame = true;
+            ui.dock.needs_frame = true;
         }
         Event::ConfigureNotify(e) if e.window == ctx.active_win => {
             ctx.update_active();
-            dock.needs_frame = true;
+            ui.dock.needs_frame = true;
         }
         Event::UnmapNotify(e) if e.window == ctx.active_win => {
             ctx.update_active();
-            dock.needs_frame = true;
+            ui.dock.needs_frame = true;
         }
         Event::MapNotify(e) if e.window == ctx.active_win => {
             ctx.update_active();
-            dock.needs_frame = true;
+            ui.dock.needs_frame = true;
         }
         Event::Expose(e) if e.count == 0 => {
-            if e.window == dock.win {
-                dock.damage();
-            } else if e.window == lp.win {
-                lp.damage();
-            } else if e.window == sw.win {
-                sw.damage();
+            if e.window == ui.dock.win {
+                ui.dock.damage();
+            } else if e.window == ui.lp.win {
+                ui.lp.damage();
+            } else if e.window == ui.sw.win {
+                ui.sw.damage();
+            } else if e.window == ui.sv.win {
+                ui.sv.needs_frame = true;
+            } else if e.window == ui.pv.win {
+                ui.pv.needs_frame = true;
             }
         }
-        Event::SelectionNotify(e) if e.requestor == dock.win => dock.on_xdnd_data(ctx, e.property),
+        Event::SelectionNotify(e) if e.requestor == ui.dock.win => ui.dock.on_xdnd_data(ctx, e.property),
         Event::ClientMessage(e) => {
             let a = ctx.atoms;
-            if e.window == dock.win && [a.XdndEnter, a.XdndPosition, a.XdndLeave, a.XdndDrop].contains(&e.type_) {
-                dock.on_xdnd(ctx, &e);
+            if e.window == ui.dock.win && [a.XdndEnter, a.XdndPosition, a.XdndLeave, a.XdndDrop].contains(&e.type_) {
+                ui.dock.on_xdnd(ctx, &e);
             } else if e.type_ == a._RDOCK_SETTINGS {
                 out.push(Action::OpenSettings);
-            } else if e.window == sw.win && e.type_ == a.WM_PROTOCOLS && e.data.as_data32()[0] == a.WM_DELETE_WINDOW {
-                sw.close(ctx);
+            } else if e.window == ui.sw.win && e.type_ == a.WM_PROTOCOLS && e.data.as_data32()[0] == a.WM_DELETE_WINDOW {
+                ui.sw.close(ctx);
             }
         }
         _ => {}
@@ -454,47 +583,48 @@ fn handle(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, s
     out
 }
 
-fn dispatch(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad, sw: &mut settings::SettingsWin, act: Action) -> R<()> {
-    let mut apply = |ctx: &mut Ctx, s: config::Settings, persist: bool| -> R<()> {
-        ctx.settings = s;
-        ctx.text.scale = s.text_scale;
-        dock.apply(ctx)?;
-        dock.damage();
-        sw.damage();
-        if persist {
-            config::save_settings(&s);
-        }
-        Ok(())
-    };
+fn apply(ctx: &mut Ctx, ui: &mut Ui, s: config::Settings, persist: bool) -> R<()> {
+    ctx.settings = s;
+    ctx.text.scale = s.text_scale;
+    ui.dock.apply(ctx)?;
+    ui.dock.damage();
+    ui.sw.damage();
+    if persist {
+        config::save_settings(&s);
+    }
+    Ok(())
+}
+
+fn dispatch(ctx: &mut Ctx, ui: &mut Ui, act: Action) -> R<()> {
     match act {
         Action::Launch(app) => {
-            dock.launch(ctx, app);
-            lp.close(ctx);
+            ui.dock.launch(ctx, app);
+            ui.lp.close(ctx);
         }
-        Action::TogglePin(app) => dock.toggle_pin(ctx, app),
+        Action::TogglePin(app) => ui.dock.toggle_pin(ctx, app),
         Action::Quit(app) => {
             for w in ctx.running.get(&app).cloned().unwrap_or_default() {
                 x::close(&ctx.conn, &ctx.atoms, ctx.root, w, ctx.time);
             }
         }
         Action::ToggleLaunchpad => {
-            if lp.visible && !lp.closing {
-                lp.close(ctx);
+            if ui.lp.visible && !ui.lp.closing {
+                ui.lp.close(ctx);
             } else {
-                lp.open(ctx)?;
+                ui.lp.open(ctx)?;
             }
         }
         Action::OpenTrash => apps::open_uri("trash:///"),
         Action::DragToDock(app, x, y) => {
-            lp.close(ctx);
-            dock.begin_external_drag(ctx, app, x, y);
+            ui.lp.close(ctx);
+            ui.dock.begin_external_drag(ctx, app, x, y);
         }
         Action::SetTheme(i) => {
             if let Some(t) = ctx.themes.get(i) {
                 ctx.theme = t.name.clone();
                 config::save_theme_name(&ctx.theme);
-                dock.reload_theme(ctx);
-                sw.damage();
+                ui.dock.reload_theme(ctx);
+                ui.sw.damage();
             }
         }
         Action::OpenThemeFolder => {
@@ -504,15 +634,70 @@ fn dispatch(ctx: &mut Ctx, dock: &mut dock::Dock, lp: &mut launchpad::Launchpad,
         }
         Action::OpenSettings => {
             ctx.themes = config::list_themes();
-            lp.close(ctx);
-            sw.open(ctx)?;
+            ui.lp.close(ctx);
+            ui.sw.open(ctx)?;
         }
-        Action::SetHide(hide) => apply(ctx, config::Settings { hide, ..ctx.settings }, true)?,
+        Action::SetHide(hide) => apply(ctx, ui, config::Settings { hide, ..ctx.settings }, true)?,
         Action::ToggleMagnification => {
-            apply(ctx, config::Settings { magnification: !ctx.settings.magnification, ..ctx.settings }, true)?
+            apply(ctx, ui, config::Settings { magnification: !ctx.settings.magnification, ..ctx.settings }, true)?
         }
-        Action::SetEdge(edge) => apply(ctx, config::Settings { edge, ..ctx.settings }, true)?,
-        Action::ApplySettings(s, persist) => apply(ctx, s, persist)?,
+        Action::SetEdge(edge) => apply(ctx, ui, config::Settings { edge, ..ctx.settings }, true)?,
+        Action::ApplySettings(s, persist) => apply(ctx, ui, s, persist)?,
+        Action::OpenStack(i) => {
+            if ui.sv.visible && !ui.sv.closing_now() && ui.sv.stack == i {
+                ui.sv.close(ctx);
+            } else if let Some(anchor) = ui.dock.stack_anchor(i) {
+                ui.pv.close();
+                ui.lp.close(ctx);
+                ui.sv.open(ctx, i, anchor)?;
+                ui.dock.release_mouse();
+            }
+        }
+        Action::OpenStackFolder(i) => {
+            if let Some(st) = ctx.stacks.get(i) {
+                files::open(&st.path);
+            }
+        }
+        Action::SetStackStyle(i, style) => {
+            if let Some(st) = ctx.stacks.get_mut(i) {
+                st.style = style;
+                stack::save(&ctx.stacks);
+            }
+        }
+        Action::SetStackSort(i, sort) => {
+            if let Some(st) = ctx.stacks.get_mut(i) {
+                st.sort = sort;
+                stack::save(&ctx.stacks);
+            }
+        }
+        Action::RemoveStack(i) => {
+            if i < ctx.stacks.len() {
+                ui.sv.close(ctx);
+                if let Some(w) = &ctx.watcher {
+                    w.unwatch(&ctx.stacks[i]);
+                }
+                ctx.stacks.remove(i);
+                stack::save(&ctx.stacks);
+                ui.dock.remove_stack(i);
+            }
+        }
+        Action::OpenRecent(app, k) => {
+            if let Some(p) = ctx.recent.get(k).cloned() {
+                files::open_with(&ctx.apps[app], &[p]);
+            }
+        }
+        Action::NewWindow(app) => {
+            apps::launch(&ctx.apps[app]);
+            ui.dock.launch_feedback(app);
+        }
     }
     Ok(())
+}
+
+/// "Reduzir movimento" do sistema (animações desligadas no GNOME/Cinnamon).
+fn reduce_motion() -> bool {
+    std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "false")
 }
