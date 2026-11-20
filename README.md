@@ -15,7 +15,7 @@ rdock draws everything itself on the CPU with [tiny-skia](https://github.com/Raz
 - **Context menus.** Right-click an app for *Open/Show*, *Keep in Dock / Remove from Dock* and *Quit*. Right-click the dock itself for quick toggles and the preferences.
 - **Drag & drop.** Drag icons to reorder them while their neighbours slide out of the way. Drag an icon out of the dock to remove it with a "poof". Drag a running app into the pinned area to pin it.
 - **Add apps by dragging.** Drag an app out of the Launchpad, or drop a `.desktop` file from your file manager or desktop (XDND), onto the dock to keep it there. It lands where you drop it.
-- **Stacks.** Drop a folder on the dock to keep it there. Up to 9 items open as an *orbit*: two arcs around the icon, newest four inside. Larger folders open a *panel* with subfolders, search, sorting (recent, name, kind), a preview pane and full keyboard control (arrows, Enter, Space for a big preview, Backspace to go up, type to filter). A red badge counts files that arrived since you last looked. Folders are watched with inotify, so idle cost stays at 0%. Your Downloads folder is added on first run.
+- **Stacks.** Drop a folder on the dock to keep it there. Up to 9 items open as an *orbit*: two arcs around the icon, newest four inside. Larger folders open a *panel* with subfolders, search, sorting (recent, name, kind), a preview pane and full keyboard control (arrows, Enter, Space for a big preview, Backspace to go up, type to filter). A red badge counts files that arrived since you last looked. Folders are watched with inotify, so idle cost stays at 0%. Right-click a stack to open it in the file manager, switch between *Automatic*, *Orbit* and *Panel*, change the sort order or remove it. Your Downloads folder is added on first run.
 - **Window previews.** Rest the pointer on an open app for 400 ms to see live thumbnails of its windows, with the workspace of each. Click to focus, × to close, the wheel to cycle. Apps with two or more windows show two dots.
 - **Drop files on apps.** While you drag a file, the apps that can open it rise and the others fade. Drop on an app to open the file with it, on a stack to move it there (hold Ctrl to copy), or on the Trash to delete it.
 - **Recent files in the app menu.** Right-click an app to reopen what it opened last (read from `recently-used.xbel`).
@@ -25,6 +25,7 @@ rdock draws everything itself on the CPU with [tiny-skia](https://github.com/Raz
 - **Hiding.** Never, always (when the pointer leaves), or **smart**: the dock hides only when the active window touches it, like Cinnamon's "intelligently hide" panels.
 - **Themes.** A theme is a single PNG (see [Themes](#themes)).
 - **Adjustable text size** for the whole interface, from 100% to 180%.
+- **Reduce motion.** When animations are turned off in your desktop settings (`org.gnome.desktop.interface enable-animations`), popovers fade instead of springing open.
 - **Idle cost.** When nothing is animating the dock uses 0% CPU. An animated frame takes about 0.5–2 ms.
 
 ### Launchpad
@@ -39,7 +40,7 @@ rdock draws everything itself on the CPU with [tiny-skia](https://github.com/Raz
   <img src="docs/vertical.png" alt="Dock on the left edge with the Neon theme" width="55">
 </p>
 
-Every change applies immediately. Open the preferences in any of these ways:
+Every change applies immediately. Besides size, magnification, position, text size, theme and hiding, there are switches for the launch bounce, the running indicators, window previews, highlighting compatible apps while dragging, and recent files in the app menu. Open the preferences in any of these ways:
 
 - right-click the dock shelf, a separator, the Launchpad or the Trash and choose *Preferências do Dock…*;
 - open **rdock** from your applications menu (it also starts the dock if it isn't running);
@@ -110,7 +111,7 @@ mkdir -p ~/.local/share/rdock/themes && cp themes/*.png ~/.local/share/rdock/the
 
 | File | Contents |
 |---|---|
-| `~/.config/rdock/settings` | Size, magnification, position, hiding, bounce, indicators, text size |
+| `~/.config/rdock/settings` | Size, magnification, position, hiding, text size, and the bounce, indicator, preview, drag-highlight and recent-files switches |
 | `~/.config/rdock/pinned` | Pinned apps, one `.desktop` ID per line |
 | `~/.config/rdock/theme` | Name of the selected theme |
 | `~/.config/rdock/stacks` | Stacks, one per line: `path;style;sort;last-opened` |
@@ -131,10 +132,11 @@ On the first run, the pinned list starts with your file manager, browser and ter
 | `files.rs` | MIME types (shared-mime-info), recent files, `gio` file operations |
 | `settings.rs` | Preferences window (sliders, switches, segmented controls) |
 | `apps.rs` | `.desktop` parsing, search normalisation, launching via `gio launch` |
-| `icons.rs` | XDG icon theme lookup and SVG/PNG rasterisation (background threads) |
-| `draw.rs` | Drawing primitives, scaled-icon cache, fast blits, text (ab_glyph) |
+| `icons.rs` | XDG icon theme lookup, SVG/PNG rasterisation (background threads), scaled-icon cache and icon drawing |
+| `draw.rs` | Drawing primitives, glass backgrounds, fast blits, text (ab_glyph) |
 | `x.rs` | ARGB windows, shared-memory image upload, EWMH helpers, keyboard map |
 | `anim.rs` | Damped springs |
+| `menu.rs` | Context menus with section headers, subtitles and check marks |
 | `config.rs` | Settings, pinned apps and themes on disk |
 
 A few details:
