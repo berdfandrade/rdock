@@ -35,10 +35,13 @@ rdock draws everything itself on the CPU with [tiny-skia](https://github.com/Raz
 ### Preferences and themes
 
 <p>
-  <img src="docs/settings.png" alt="Preferences window" width="420">
-  <img src="docs/themes.png" alt="Built-in themes: Glass, Graphite, Ice, Neon, Sunset, Wood" width="430">
-  <img src="docs/vertical.png" alt="Dock on the left edge with the Neon theme" width="55">
+  <img src="docs/settings.png" alt="Preferences window" width="300">
+  <img src="docs/left-edge.jpg" alt="Dock on the left edge of the screen" width="480">
 </p>
+
+<img src="docs/themes.png" alt="Built-in themes: Glass, Graphite, Ice, Neon, Sunset, Wood" width="430">
+
+<img src="docs/stack.png" alt="The Downloads stack open as an orbit above the dock" width="420">
 
 Every change applies immediately. Besides size, magnification, position, text size, theme and hiding, there are switches for the launch bounce, the running indicators, window previews, highlighting compatible apps while dragging, and recent files in the app menu. Open the preferences in any of these ways:
 
