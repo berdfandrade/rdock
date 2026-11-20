@@ -13,7 +13,7 @@ use x11rb::protocol::xproto::*;
 
 use crate::anim::Spring;
 use crate::config::Edge;
-use crate::draw;
+use crate::{draw, icons};
 use crate::stack::Anchor;
 use crate::{x, Ctx, Msg, R};
 
@@ -361,7 +361,7 @@ impl Previews {
                     let tf = Transform::from_row(k2, 0.0, 0.0, k2, x + (cw - dw) / 2.0, y + (ch - dh) / 2.0);
                     draw::blit(&mut self.pix, p, tf, ca);
                 }
-                None => draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, &icon, x + cw / 2.0, y + ch / 2.0 - 28.0, 56.0, ca * 0.8, 0.0),
+                None => icons::draw(&mut self.pix, &mut ctx.scaled, &ctx.icons, &icon, x + cw / 2.0, y + ch / 2.0 - 28.0, 56.0, ca * 0.8, 0.0),
             }
             let ring = if hovered { draw::color(ACCENT.0, ACCENT.1, ACCENT.2, ca) } else { draw::color(255, 255, 255, 0.12 * ca) };
             draw::stroke(&mut self.pix, &draw::rrect(x + 0.5, y + 0.5, cw - 1.0, ch - 1.0, 9.0), &ring, if hovered { 2.0 } else { 1.0 }, id);

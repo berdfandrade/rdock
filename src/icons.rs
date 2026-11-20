@@ -1,12 +1,12 @@
 //! Resolução de ícones pelo tema do sistema (spec XDG Icon Theme) e rasterização SVG/PNG.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use tiny_skia::{
-    Color, FillRule, FilterQuality, GradientStop, LinearGradient, Paint, Pixmap, PixmapPaint, Point,
+    BlendMode, Color, FillRule, FilterQuality, GradientStop, LinearGradient, Paint, Pixmap, PixmapPaint, Point,
     SpreadMode, Transform,
 };
 
@@ -326,4 +326,79 @@ fn thumbnail(path: &std::path::Path) -> Option<Pixmap> {
     let paint = tiny_skia::PixmapPaint { quality: tiny_skia::FilterQuality::Bicubic, ..Default::default() };
     out.draw_pixmap(0, 0, pix.as_ref(), &paint, Transform::from_scale(k, k), None);
     Some(out)
+}
+
+/// Cópias dos ícones já redimensionadas, por (nome, tamanho em px).
+#[derive(Default)]
+pub struct ScaleCache {
+    map: HashMap<String, HashMap<u32, Pixmap>>,
+    count: usize,
+}
+
+impl ScaleCache {
+    pub fn get<'a>(&'a mut self, icons: &HashMap<String, Icon>, key: &str, size: u32) -> Option<&'a Pixmap> {
+        let size = size.clamp(1, 512);
+        if !self.map.get(key).is_some_and(|m| m.contains_key(&size)) {
+            let icon = icons.get(key)?;
+            if self.count > 2500 {
+                self.map.clear();
+                self.count = 0;
+            }
+            let src = if size as f32 <= icon.small.width() as f32 * 1.15 { &icon.small } else { &icon.big };
+            self.map.entry(key.to_string()).or_default().insert(size, fit(src, size));
+            self.count += 1;
+        }
+        self.map.get(key)?.get(&size)
+    }
+}
+
+/// Desenha um ícone com centro horizontal `cx` e topo `top`.
+/// Usa uma cópia pré-escalada no tamanho inteiro mais próximo e compõe direto na memória:
+/// redimensionar com filtro a cada quadro custaria ~30ns/pixel.
+#[allow(clippy::too_many_arguments)]
+pub fn draw(
+    pix: &mut Pixmap,
+    cache: &mut ScaleCache,
+    icons: &HashMap<String, Icon>,
+    key: &str,
+    cx: f32,
+    top: f32,
+    size: f32,
+    opacity: f32,
+    darken: f32,
+) {
+    draw_clip(pix, cache, icons, key, cx, top, size, opacity, darken, (i32::MIN, i32::MAX));
+}
+
+/// Como `draw`, mas só desenha as linhas `clip.0 <= y < clip.1` (listas com rolagem).
+#[allow(clippy::too_many_arguments)]
+pub fn draw_clip(
+    pix: &mut Pixmap,
+    cache: &mut ScaleCache,
+    icons: &HashMap<String, Icon>,
+    key: &str,
+    cx: f32,
+    top: f32,
+    size: f32,
+    opacity: f32,
+    darken: f32,
+    clip: (i32, i32),
+) {
+    if size < 1.0 || opacity <= 0.003 {
+        return;
+    }
+    let s = size.round() as u32;
+    let x = (cx - s as f32 / 2.0).round() as i32;
+    let y = top.round() as i32;
+    if let Some(p) = cache.get(icons, key, s) {
+        crate::draw::blit_fast_clip(pix, p, x, y, opacity, clip);
+    }
+    if darken > 0.01 {
+        if let Some(icon) = icons.get(key) {
+            let sc = s as f32 / icon.dark.width() as f32;
+            let tf = Transform::from_row(sc, 0.0, 0.0, sc, x as f32, y as f32);
+            let paint = PixmapPaint { opacity: (opacity * darken).min(1.0), blend_mode: BlendMode::SourceOver, quality: FilterQuality::Bilinear };
+            pix.draw_pixmap(0, 0, icon.dark.as_ref(), &paint, tf, None);
+        }
+    }
 }

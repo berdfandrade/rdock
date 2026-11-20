@@ -17,7 +17,7 @@ use x11rb::wrapper::ConnectionExt as _;
 
 use crate::anim::{ease_out_cubic, Spring};
 use crate::config::{self, Edge, HideMode, Settings};
-use crate::draw;
+use crate::{draw, icons};
 use crate::menu::{Entry, Menu};
 use crate::stack::{Sort, Style};
 use crate::{x, Action, Ctx, R};
@@ -1489,7 +1489,7 @@ impl Dock {
             let (px, py) = self.uv_to_win(cu, edge_v + size / 2.0);
             let key = icon_key(&ctx.apps, &ctx.stacks, it.kind, self.trash_full);
             let op = p * (1.0 - 0.6 * it.dim.value.clamp(0.0, 1.0));
-            draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, key, px, py - size / 2.0, size, op, it.press.value * 0.8);
+            icons::draw(&mut self.pix, &mut ctx.scaled, &ctx.icons, key, px, py - size / 2.0, size, op, it.press.value * 0.8);
             ext = union(ext, (px - size / 2.0, py - size / 2.0, px + size / 2.0, py + size / 2.0));
             if self.s.indicators && it.dot.value > 0.01 {
                 // Dois pontos quando o app tem duas ou mais janelas.
@@ -1538,7 +1538,7 @@ impl Dock {
                 let (px, py) = self.uv_to_win(cu, cv);
                 let key = icon_key(&ctx.apps, &ctx.stacks, it.kind, self.trash_full);
                 let op = if d.remove { 0.55 } else { 1.0 };
-                draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, key, px, py - size / 2.0, size, op, 0.0);
+                icons::draw(&mut self.pix, &mut ctx.scaled, &ctx.icons, key, px, py - size / 2.0, size, op, 0.0);
                 ext = union(ext, (px - size, py - size, px + size, py + size));
             }
         }
@@ -1549,7 +1549,7 @@ impl Dock {
             let (px, py) = self.uv_to_win(pf.u, pf.v);
             let size = icon * (1.0 + 0.5 * e);
             let op = (1.0 - e * 2.4).max(0.0);
-            draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, &pf.key, px, py - size / 2.0, size, op, 0.0);
+            icons::draw(&mut self.pix, &mut ctx.scaled, &ctx.icons, &pf.key, px, py - size / 2.0, size, op, 0.0);
             for k in 0..10 {
                 let ang = k as f32 * PI / 5.0 + e * 0.6;
                 let dist = icon * (0.2 + 0.75 * e);

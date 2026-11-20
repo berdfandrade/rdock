@@ -1,4 +1,4 @@
-//! Primitivas de desenho: retângulos arredondados, sombras, ícones e texto.
+//! Primitivas de desenho: retângulos arredondados, sombras, composição e texto.
 
 use std::collections::HashMap;
 
@@ -6,8 +6,6 @@ use ab_glyph::{point, Font, FontVec, GlyphId, PxScale, ScaleFont};
 use tiny_skia::{
     BlendMode, FillRule, FilterQuality, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform,
 };
-
-use crate::icons::Icon;
 
 pub fn rrect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
     let r = r.min(w / 2.0).min(h / 2.0).max(0.0);
@@ -70,57 +68,6 @@ pub fn shadow_n(pix: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32, streng
 }
 
 
-/// Desenha um ícone com centro horizontal `cx` e topo `top`.
-/// Usa uma cópia pré-escalada no tamanho inteiro mais próximo e compõe direto na memória:
-/// redimensionar com filtro a cada quadro custaria ~30ns/pixel.
-#[allow(clippy::too_many_arguments)]
-pub fn icon(
-    pix: &mut Pixmap,
-    cache: &mut ScaleCache,
-    icons: &HashMap<String, Icon>,
-    key: &str,
-    cx: f32,
-    top: f32,
-    size: f32,
-    opacity: f32,
-    darken: f32,
-) {
-    icon_clip(pix, cache, icons, key, cx, top, size, opacity, darken, (i32::MIN, i32::MAX));
-}
-
-/// Como `icon`, mas só desenha as linhas `clip.0 <= y < clip.1` (listas com rolagem).
-#[allow(clippy::too_many_arguments)]
-pub fn icon_clip(
-    pix: &mut Pixmap,
-    cache: &mut ScaleCache,
-    icons: &HashMap<String, Icon>,
-    key: &str,
-    cx: f32,
-    top: f32,
-    size: f32,
-    opacity: f32,
-    darken: f32,
-    clip: (i32, i32),
-) {
-    if size < 1.0 || opacity <= 0.003 {
-        return;
-    }
-    let s = size.round() as u32;
-    let x = (cx - s as f32 / 2.0).round() as i32;
-    let y = top.round() as i32;
-    if let Some(p) = cache.get(icons, key, s) {
-        blit_fast_clip(pix, p, x, y, opacity, clip);
-    }
-    if darken > 0.01 {
-        if let Some(icon) = icons.get(key) {
-            let sc = s as f32 / icon.dark.width() as f32;
-            let tf = Transform::from_row(sc, 0.0, 0.0, sc, x as f32, y as f32);
-            let paint = PixmapPaint { opacity: (opacity * darken).min(1.0), blend_mode: BlendMode::SourceOver, quality: FilterQuality::Bilinear };
-            pix.draw_pixmap(0, 0, icon.dark.as_ref(), &paint, tf, None);
-        }
-    }
-}
-
 /// Composição SourceOver (pré-multiplicada) em posição inteira, com opacidade.
 pub fn blit_fast(dst: &mut Pixmap, src: &Pixmap, x: i32, y: i32, opacity: f32) {
     blit_fast_clip(dst, src, x, y, opacity, (i32::MIN, i32::MAX));
@@ -157,30 +104,6 @@ pub fn blit_fast_clip(dst: &mut Pixmap, src: &Pixmap, x: i32, y: i32, opacity: f
             }
             d[3] = (sa + (d[3] as u32 * inv + 127) / 255).min(255) as u8;
         }
-    }
-}
-
-/// Cópias dos ícones já redimensionadas, por (nome, tamanho em px).
-#[derive(Default)]
-pub struct ScaleCache {
-    map: HashMap<String, HashMap<u32, Pixmap>>,
-    count: usize,
-}
-
-impl ScaleCache {
-    pub fn get<'a>(&'a mut self, icons: &HashMap<String, Icon>, key: &str, size: u32) -> Option<&'a Pixmap> {
-        let size = size.clamp(1, 512);
-        if !self.map.get(key).is_some_and(|m| m.contains_key(&size)) {
-            let icon = icons.get(key)?;
-            if self.count > 2500 {
-                self.map.clear();
-                self.count = 0;
-            }
-            let src = if size as f32 <= icon.small.width() as f32 * 1.15 { &icon.small } else { &icon.big };
-            self.map.entry(key.to_string()).or_default().insert(size, crate::icons::fit(src, size));
-            self.count += 1;
-        }
-        self.map.get(key)?.get(&size)
     }
 }
 

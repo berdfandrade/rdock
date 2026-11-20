@@ -91,7 +91,7 @@ pub struct Ctx {
     matcher: HashMap<String, usize>,
     synthetic: HashMap<String, usize>,
     pub icons: HashMap<String, icons::Icon>,
-    pub scaled: draw::ScaleCache,
+    pub scaled: icons::ScaleCache,
     pub text: draw::Text,
     win_cache: HashMap<Window, Option<usize>>,
     /// App → janelas, em ordem de empilhamento (a última é a do topo).
@@ -294,7 +294,7 @@ fn main() -> R<()> {
         apps,
         synthetic: HashMap::new(),
         icons: HashMap::new(),
-        scaled: draw::ScaleCache::default(),
+        scaled: icons::ScaleCache::default(),
         text: draw::Text::load(),
         win_cache: HashMap::new(),
         running: HashMap::new(),

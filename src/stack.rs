@@ -18,7 +18,7 @@ use x11rb::protocol::xproto::*;
 
 use crate::anim::Spring;
 use crate::config::Edge;
-use crate::draw;
+use crate::{draw, icons};
 use crate::files;
 use crate::x::{self, Keymap};
 use crate::{apps, Ctx, Msg, R};
@@ -811,7 +811,7 @@ impl StackView {
             let ring = if focused { draw::color(ACCENT.0, ACCENT.1, ACCENT.2, pa) } else { draw::color(255, 255, 255, 0.13 * pa) };
             draw::stroke(&mut self.pix, &draw::rrect(cx - size / 2.0 + 0.5, cy - size / 2.0 + 0.5, size - 1.0, size - 1.0, 14.0 * s), &ring, if focused { 2.0 } else { 1.0 }, id);
             let isz = (size * if e.icon.starts_with("thumb:") { 0.8 } else { 0.66 }).round();
-            draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, &e.icon, cx, cy - isz / 2.0, isz, pa, 0.0);
+            icons::draw(&mut self.pix, &mut ctx.scaled, &ctx.icons, &e.icon, cx, cy - isz / 2.0, isz, pa, 0.0);
             if e.mtime > self.seen_before {
                 draw::circle(&mut self.pix, cx + size / 2.0 - 3.0, cy - size / 2.0 + 3.0, 4.5, &draw::color(ACCENT.0, ACCENT.1, ACCENT.2, pa));
             }
@@ -935,7 +935,7 @@ impl StackView {
             let e = &self.entries[i];
             let isz = if e.icon.starts_with("thumb:") { 60.0 } else { 52.0 };
             let clip = (clip0 as i32, clip1 as i32);
-            draw::icon_clip(&mut self.pix, &mut ctx.scaled, &ctx.icons, &e.icon, x + w / 2.0, y + 10.0 + (52.0 - isz) / 2.0, isz, fade, 0.0, clip);
+            icons::draw_clip(&mut self.pix, &mut ctx.scaled, &ctx.icons, &e.icon, x + w / 2.0, y + 10.0 + (52.0 - isz) / 2.0, isz, fade, 0.0, clip);
             let lines = wrap2(&ctx.text, &e.name, 13.0, w - 10.0);
             for (n, l) in lines.iter().enumerate() {
                 let tp = ctx.text.get(l, 13.0, 0xffffff);
@@ -976,7 +976,7 @@ impl StackView {
                 draw::fill(&mut self.pix, &draw::rrect(bx, by, bw, bh, 14.0), &draw::color(20, 18, 24, 0.94 * a), id);
                 let e = &self.entries[i];
                 let size = if e.icon.starts_with("thumb:") { (bh - 70.0).min(bw - 40.0) } else { 160.0 };
-                draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, &e.icon, bx + bw / 2.0, by + 16.0 + (bh - 70.0 - size) / 2.0, size, a, 0.0);
+                icons::draw(&mut self.pix, &mut ctx.scaled, &ctx.icons, &e.icon, bx + bw / 2.0, by + 16.0 + (bh - 70.0 - size) / 2.0, size, a, 0.0);
                 let name = e.name.clone();
                 center(&mut ctx.text, &mut self.pix, &name, 15.5, by + bh - 44.0, a, bx, bw);
                 return;
@@ -994,7 +994,7 @@ impl StackView {
         };
         let size = if icon.starts_with("thumb:") { 180.0 } else { 88.0 };
         let top = py + (ph - size - 40.0 - lines.len() as f32 * 18.0) / 2.0;
-        draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, &icon, px + pw / 2.0, top, size, a, 0.0);
+        icons::draw(&mut self.pix, &mut ctx.scaled, &ctx.icons, &icon, px + pw / 2.0, top, size, a, 0.0);
         let mut y = top + size + 14.0;
         y += center(&mut ctx.text, &mut self.pix, &name, 16.0, y, a, px, pw) + 4.0;
         for l in lines {

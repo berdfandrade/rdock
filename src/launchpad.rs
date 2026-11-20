@@ -7,7 +7,7 @@ use tiny_skia::{Color, FilterQuality, Pixmap, PixmapPaint, Transform};
 use x11rb::protocol::xproto::*;
 
 use crate::anim::{ease_out_cubic, Spring};
-use crate::draw;
+use crate::{draw, icons};
 use crate::menu::Menu;
 use crate::x::{self, Keymap};
 use crate::{apps, Action, Ctx, R};
@@ -417,7 +417,7 @@ impl Launchpad {
             let (icx, top) = (mx + (icx - mx) * z, my + (top - my) * z);
             let app = &ctx.apps[self.list[i]];
             let dark = if pressed == Some(i) { 0.7 } else { 0.0 };
-            draw::icon(&mut self.pix, &mut ctx.scaled, &ctx.icons, &app.icon, icx, top, ICON, t, dark);
+            icons::draw(&mut self.pix, &mut ctx.scaled, &ctx.icons, &app.icon, icx, top, ICON, t, dark);
             let name = &self.labels[i];
             let shadow = ctx.text.get(name, LABEL, 0x000000);
             let (lx, ly) = ((icx - shadow.width() as f32 / 2.0).round() as i32, (top + ICON + 6.0).round() as i32);
